@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+.env*.local
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+
+# 本地 npm 缓存（沙箱内安装用，不应入库）
+.npm-cache/

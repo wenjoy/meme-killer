@@ -1,0 +1,35 @@
+{
+  "name": "meme-radar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pump.fun meme coin 买入风险体检 —— 五维链上风控分析 Web App",
+  "scripts": {
+    "dev": "next dev -p 5273",
+    "build": "next build",
+    "start": "next start -p 5273",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --import ./src/core/test-setup.mjs --test src/core/engine.test.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.99.0",
+    "next": "16.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.0",
+    "playwright": "^1.52.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "packageManager": "pnpm@10.19.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
