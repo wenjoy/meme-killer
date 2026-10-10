@@ -2,9 +2,9 @@
  * 采集编排 —— 只使用真实数据源，没有 mock、没有回退样本。
  *
  * 数据源分工：
- *   Solana RPC (Helius)  → mint 账户、权限、Token-2022 扩展、最大持仓、元数据
- *   Helius Enhanced API  → 部署者身份、资金来源、交易历史（dev 卖出/批量发币）
- *   DexScreener          → 价格、成交量、买卖笔数、池地址
+ *   Solana RPC + DAS        → mint 账户权限、Token-2022 扩展、元数据、最大持仓
+ *   Helius Enhanced API     → 部署者身份、买卖结构、dev 行为、历史发币
+ *   DexScreener             → 价格/市值/流动性 USD、pair 地址（可用时）
  *
  * 三条铁律：
  * 1. **采集失败绝不能变成「看起来安全」**。缺失字段一律标 `unavailable`
@@ -17,6 +17,7 @@ import type { FieldOrigin, ScanInput, ScanMeta, ScanReport } from '@/core/types'
 import { fetchDexScreener } from './dexscreener';
 import {
   fetchDeveloper,
+  fetchMintActivity,
   fetchOnChain,
   hasEnhancedApi,
   isLikelyMint,
@@ -33,22 +34,30 @@ export interface CollectOptions {
 export function mergeInputs(parts: {
   mint: string;
   onchain: Awaited<ReturnType<typeof fetchOnChain>>;
+  activity: Awaited<ReturnType<typeof fetchMintActivity>>;
   developer: Awaited<ReturnType<typeof fetchDeveloper>>;
   dex: Awaited<ReturnType<typeof fetchDexScreener>>;
   warnings: string[];
   origins: Record<string, FieldOrigin>;
 }): ScanInput {
-  const { mint, onchain, developer, dex, warnings, origins } = parts;
+  const { mint, onchain, activity, developer, dex, warnings, origins } = parts;
 
-  const token = { ...onchain.token, ...pruneUndefined(dex.token), mint };
-
-  // 池地址：确定性推导（bonding curve / PumpSwap PDA）+ DexScreener pair。
-  // 这是「持币集中度」准确率的关键 —— 漏掉池会导致 Top10 虚高误报。
-  const pools = resolvePoolAddresses(
+  const token = {
+    ...onchain.token,
+    ...pruneUndefined(dex.token),
     mint,
-    onchain.creator,
-    dex.liquidity?.poolAddresses ?? [],
-  );
+    createdAt: onchain.token.createdAt ?? activity.createdSec,
+  };
+
+  // ── 池地址：两路确定性来源 ──────────────────────────────────────
+  // 1. 确定性 PDA 推导（bonding curve / PumpSwap / 池 ATA）
+  // 2. DexScreener 的 pair 地址
+  //
+  // ⚠️ 刻意不采纳「从成交里观察到的对手方」：那个信号无法区分
+  // 「AMM 池提供流动性」与「dev/巨鲸砸盘」，实测曾把 dev 持有的 46%
+  // 供应量误当成池而剔除，导致高度集中的币被判成「持仓分布健康」。
+  // 宁可漏掉池（会在 warnings 里如实说明），也不能抹掉真实筹码。
+  const pools = resolvePoolAddresses(mint, activity.creator, dex.liquidity?.poolAddresses ?? []);
   for (const w of pools.warnings) warnings.push(w);
 
   const poolAddresses = [...pools.addresses];
@@ -56,9 +65,18 @@ export function mergeInputs(parts: {
   // 把池地址回填到持仓分类：owner 或 token account 命中即视为池
   const holders = onchain.holders.map((h) =>
     pools.addresses.has(h.address)
-      ? { ...h, isPool: true, label: pools.labels[h.address] ?? 'pool' }
+      ? { ...h, isPool: true, label: pools.labels[h.address] ?? 'observed pool' }
       : h,
   );
+
+  // ── 流动性：真实成交优先，DexScreener 补 USD 口径 ───────────────
+  // 买卖笔数/金额来自逐笔成交（更原始、更可信）；
+  // 价格、市值、流动性 USD 只有 DexScreener 有。
+  const liquidity = {
+    ...pruneUndefined(dex.liquidity ?? {}),
+    ...pruneUndefined(activity.liquidity),
+    poolAddresses,
+  };
 
   const contract = onchain.contract;
   if (contract && (dex.liquidity?.graduated || poolAddresses.length > 0)) {
@@ -71,12 +89,13 @@ export function mergeInputs(parts: {
     }
   }
 
-  const liquidity = dex.liquidity ? { ...dex.liquidity, poolAddresses } : null;
+  // 只有 poolAddresses 时不算「有流动性数据」—— 分析器需要真实指标
+  const hasLiquidityMetrics = Object.keys(liquidity).some((k) => k !== 'poolAddresses');
 
   return {
     token,
     contract,
-    liquidity,
+    liquidity: hasLiquidityMetrics ? liquidity : null,
     holders,
     developer: developer.developer,
     // Helius 不提供社交数据，需要第三方服务；留空让维度标记为未采集
@@ -122,8 +141,9 @@ export async function collectAndScan(
     throw new Error('这不是一个合法的 Solana 地址（base58，32–44 位）。请检查是否复制完整。');
   }
 
-  // 链上基础事实与市场数据可以并行
-  const [onchain, dex] = await Promise.all([
+  // 链上基础事实、市场数据、成交结构三者互不依赖，并行采集。
+  // 串行会让任一慢数据源把总耗时叠加起来（实测 3 个全挂 = 65 秒）。
+  const [onchain, dex, activity] = await Promise.all([
     fetchOnChain(mint, warnings),
     opts.skipMarket
       ? Promise.resolve({
@@ -133,14 +153,15 @@ export async function collectAndScan(
           warning: '已跳过 DexScreener（调试模式）',
         })
       : fetchDexScreener(mint),
+    fetchMintActivity(mint, 0, warnings),
   ]);
 
   Object.assign(origins, onchain.origins);
-  origins.liquidity = dex.origin !== 'unavailable' ? dex.origin : 'unavailable';
+  origins.liquidity = dex.origin !== 'unavailable' ? dex.origin : activity.origin;
   if (dex.warning) warnings.push(dex.warning);
 
-  // 开发者履历依赖上一步解析出的 creator，必须串行
-  const developer = await fetchDeveloper(mint, onchain.creator, warnings);
+  // 开发者履历依赖 activity 解析出的 creator，必须串行
+  const developer = await fetchDeveloper(mint, activity.creator, warnings);
   warnings.push(...developer.warnings);
   origins.developer = developer.origin;
 
@@ -149,7 +170,7 @@ export async function collectAndScan(
     '社交热度数据源未接入（Helius 不提供社交数据，需 X/TG 第三方服务）。该维度标记为未采集，不计入评分。',
   );
 
-  const input = mergeInputs({ mint, onchain, developer, dex, warnings, origins });
+  const input = mergeInputs({ mint, onchain, activity, developer, dex, warnings, origins });
   const report = scan(input);
   report.meta.elapsedMs = Date.now() - started;
   return report;
@@ -162,18 +183,16 @@ export function describeMeta(meta: ScanMeta): string {
 
 /** 启动自检：告诉用户当前配置下哪些维度能真正生效 */
 export function capabilityReport(): {
-  rpc: string;
   rpcHost: string;
   enhancedApi: boolean;
   note: string;
 } {
   const enhanced = hasEnhancedApi();
   return {
-    rpc: rpcUrl(),
     rpcHost: describeSources().split(' + ')[0],
     enhancedApi: enhanced,
     note: enhanced
-      ? '已检测到 Helius API key：合约安全、流动性、持币集中度、开发者历史四个维度可完整计算。'
-      : '未检测到 Helius API key：仅标准 RPC 可用，开发者历史与元数据将缺失，覆盖率会因此下降。',
+      ? '已检测到 Helius API key：合约安全、流动性、持币集中度、开发者历史四个维度可计算。'
+      : '未检测到 Helius API key：仅标准 RPC 可用，部署者身份与成交明细将缺失，覆盖率会因此下降。',
   };
 }

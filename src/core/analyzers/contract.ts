@@ -80,8 +80,15 @@ export function analyzeContract(data: ScanInput): DimensionResult {
   }
 
   // ── 代币程序与扩展 ───────────────────────────────────────────────
+  //
+  // ⚠️ 不能用「是否 Token-2022」当风险信号。
+  // 实测真实 pump.fun 新币（2024 之后）本身就发行在 Token-2022 上
+  // （mint 带 metadata_pointer 扩展），把它判成高危会让**每一个正常新币**
+  // 都背上一条 high finding，模型直接失去区分度。
+  //
+  // 真正决定风险的是**扩展的内容**：transferHook / permanentDelegate
+  // 这类能限制卖出或转走持币的扩展才是要害，下面逐项检查。
   if (c.tokenProgram === TOKEN_2022_PROGRAM_ID) {
-    add('high', '使用 Token-2022 程序', 'Pump.fun 发行的币走经典 SPL Token。使用 Token-2022 需高度警惕仿冒。');
     const exts = c.extensions ?? [];
     for (const ext of exts) {
       const meta = EXTENSION_RISK[ext] ?? {
@@ -92,7 +99,16 @@ export function analyzeContract(data: ScanInput): DimensionResult {
       if (meta.severity === 'critical') veto(`作恶扩展：${meta.label}`, meta.why);
       else add(meta.severity, `扩展：${meta.label}`, meta.why);
     }
-    if (exts.length === 0) add('medium', 'Token-2022 但未见扩展', '仍建议人工复核 mint 账户 TLV 数据。');
+    if (exts.length === 0) {
+      // 新版 pump.fun 代币带 metadata_pointer，属正常；完全没有扩展也属正常范围。
+      // 这里只作说明，不算风险 —— 用 'good' 语义（中性/无问题）。
+      add(
+        'good',
+        'Token-2022 代币，未检出作恶扩展',
+        '新版 pump.fun 代币本身就发行在 Token-2022 上，使用该程序不是风险信号。' +
+          '关键看扩展：未检出 transferHook / permanentDelegate 等可限制卖出的扩展。',
+      );
+    }
   }
 
   // ── 转移税 ──────────────────────────────────────────────────────

@@ -425,3 +425,65 @@ test('夹具覆盖了所有极端场景，且都很明确（防止夹具本身�
   assert.equal(scan(openMintInput()).vetoed, true);
   assert.equal(scan(emptyInput()).coverage, 0);
 });
+
+// ── 回归测试：真实链上数据踩出来的两个误判 ──────────────────────────
+// 这两个 bug 都是在真实 mint 上跑出来的，且都是「静默给出相反结论」，
+// 所以必须有测试锁住。
+
+test('【回归】creator 链上仍持有筹码时，绝不能报「部署者已清仓」', () => {
+  // 实测场景：流水口径算出卖出/买入 = 100%，但链上余额还有 27.6% 供应量。
+  // 原因：交易历史窗口有限，买与卖落在不同窗口里。
+  const data = healthyInput();
+  data.developer = {
+    ...data.developer!,
+    devSoldRatio: 1, // 流水：全卖了
+    devFullyExited: false, // 链上：仍持有（权威判据）
+    devCurrentBalance: 553_297_097,
+  };
+  const r = scan(data);
+  const dev = r.dimensions.developer;
+  assert.equal(dev.vetoed, false, '余额不为零就不能判清仓');
+  assert.ok(
+    !dev.findings.some((f) => f.title.includes('已清仓')),
+    '不得出现「部署者已清仓」',
+  );
+  assert.equal(r.vetoed, false);
+});
+
+test('【回归】清仓状态未知时也不得判死（未知 ≠ 已跑路）', () => {
+  const data = healthyInput();
+  data.developer = { ...data.developer!, devSoldRatio: 1, devFullyExited: undefined };
+  const r = scan(data);
+  const dev = r.dimensions.developer;
+  assert.ok(!dev.findings.some((f) => f.veto), '无法确认时不能否决');
+  assert.ok(dev.findings.some((f) => f.title.includes('有过卖出')), '应降级为提示');
+});
+
+test('【回归】确认清仓时才允许硬否决', () => {
+  const data = healthyInput();
+  data.developer = { ...data.developer!, devSoldRatio: 1, devFullyExited: true, devCurrentBalance: 0 };
+  const r = scan(data);
+  assert.equal(r.dimensions.developer.vetoed, true);
+  assert.equal(r.score, 100);
+});
+
+test('【回归】dev 的筹码不能被当成流动性池剔除', () => {
+  // 实测场景：dev 持有 46% 供应量，因频繁卖出曾被误 classify 为 pool，
+  // 报告显示「持仓分布健康」，把高度集中的币判成安全。
+  const data = healthyInput();
+  const devAddr = data.developer!.creator!;
+  data.holders = [
+    { address: devAddr, amount: 923_340_303, pct: 46.2 },
+    ...Array.from({ length: 9 }, (_, i) => ({
+      address: `Retail${i}Walletxxxxxxxxxxxxxxxxxxxxxxxxxx`,
+      amount: 50_000_000,
+      pct: 2.5,
+    })),
+  ];
+  data.liquidity = { ...data.liquidity!, poolAddresses: [] };
+  const r = scan(data);
+  const m = r.dimensions.holders.metrics as Record<string, number>;
+  assert.ok(m.devClusterPct > 40, `dev 持仓应被计入，实际 ${m.devClusterPct}`);
+  assert.equal(m.byKind && (m as never as { byKind: { pool: number } }).byKind.pool, 0, '不得把 dev 记成池');
+  assert.equal(r.dimensions.holders.vetoed, true, 'Top10 93% 必须触发集中度否决');
+});

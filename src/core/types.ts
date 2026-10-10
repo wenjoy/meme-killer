@@ -93,7 +93,20 @@ export interface DeveloperInfo {
   tokensLast7d?: number;
   devSoldRatio?: number;
   devHoldingPct?: number;
+  /**
+   * 部署者是否已清仓。
+   *
+   * **三态**，且只有 `true` 才触发硬否决：
+   * - `true`      已确认清仓（链上余额为 0）
+   * - `false`     已确认未清仓（链上仍有余额）
+   * - `undefined` 无法确认 —— 不得据此判死，只能提示
+   *
+   * 绝不能用流水比例代替它：交易历史窗口有限，
+   * 实测出现过「流水算出清仓、链上仍持有 27.6% 供应量」的严重误判。
+   */
   devFullyExited?: boolean;
+  /** creator 当前在该代币上的链上余额（UI 单位），权威判据 */
+  devCurrentBalance?: number;
   devFirstSellAgeSec?: number;
   pulledLiquidity?: boolean;
   fundedByMixer?: boolean;
