@@ -1,7 +1,7 @@
 'use client';
 
 import { DIMENSION_ORDER, SEVERITY_ORDER } from '@/core/constants';
-import type { DimensionResult, Finding, ScanReport } from '@/core/types';
+import type { CustodyMetric, DimensionResult, Finding, ScanReport } from '@/core/types';
 import { RadarChart, SEVERITY_STYLE, ScoreRing, TONE } from './visuals';
 
 function FindingRow({ f }: { f: Finding }) {
@@ -260,9 +260,21 @@ export function Report({ report }: { report: ScanReport }) {
                         <dd className="text-ink-200">{num(m.top10Pct)}%</dd>
                       </div>
                       <div className="flex justify-between">
-                        <dt>剔除池</dt>
+                        <dt>剔除项</dt>
                         <dd className="text-ink-200">{num(m.excludedPct)}%</dd>
                       </div>
+                      {Number(m.timelockPct) > 0 && (
+                        <div className="flex justify-between">
+                          <dt>锁仓</dt>
+                          <dd className="text-safe">{num(m.timelockPct)}%</dd>
+                        </div>
+                      )}
+                      {Number(m.otherCustodyPct) > 0 && (
+                        <div className="flex justify-between">
+                          <dt>托管</dt>
+                          <dd className="text-warn">{num(m.otherCustodyPct)}%</dd>
+                        </div>
+                      )}
                     </>
                   )}
                   {key === 'liquidity' && (
@@ -334,6 +346,8 @@ export function Report({ report }: { report: ScanReport }) {
         </div>
       </section>
 
+      <CustodySection report={report} />
+
       <Provenance report={report} />
 
       {/* ── 五维详细发现 ─────────────────────────────────────── */}
@@ -354,6 +368,93 @@ export function Report({ report }: { report: ScanReport }) {
       </p>
     </div>
   );
+}
+
+/**
+ * 锁仓 / 程序托管持仓明细。
+ *
+ * 用户要求：锁仓要从巨鲸与集中度里剔除，**但必须单独列出来并显示解锁时间**。
+ * 这里如实呈现三件事：占比、类型、解锁时间（读不到就写「待接入」）、
+ * 以及**是否计入了集中度** —— 避免「剔除了却看不见」变成隐性漏报。
+ */
+function CustodySection({ report }: { report: ScanReport }) {
+  const m = report.dimensions.holders?.metrics;
+  const list = Array.isArray(m?.custody) ? (m.custody as CustodyMetric[]) : [];
+  if (list.length === 0) return null;
+
+  const locks = list.filter((c) => c.kind === 'timelock');
+  const others = list.filter((c) => c.kind !== 'timelock');
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold text-ink-300">锁仓与托管持仓</h2>
+      <div className="overflow-hidden rounded-xl border border-ink-700">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-ink-900/60 text-ink-400">
+            <tr>
+              <th className="px-3 py-2 font-medium">地址</th>
+              <th className="px-3 py-2 font-medium">类型</th>
+              <th className="px-3 py-2 text-right font-medium">占比</th>
+              <th className="px-3 py-2 font-medium">解锁时间</th>
+              <th className="px-3 py-2 font-medium">计入集中度</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-800">
+            {list.map((c) => (
+              <tr key={c.address} className="bg-ink-950/40">
+                <td className="px-3 py-2 font-mono text-ink-300">{shortAddr(c.address)}</td>
+                <td className="px-3 py-2 text-ink-200">{c.label}</td>
+                <td className="px-3 py-2 text-right font-mono text-ink-200">{num(c.pct)}%</td>
+                <td className="px-3 py-2">
+                  {c.kind !== 'timelock' ? (
+                    <span className="text-ink-400">—（非时间锁）</span>
+                  ) : c.unlockAt ? (
+                    <span className="text-warn">{c.unlockAt}</span>
+                  ) : (
+                    <span
+                      className="text-ink-400"
+                      title="托管仓位的 owner 是 PDA，拿不到账户去解析解锁计划，因此读不到到期日"
+                    >
+                      待接入
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2">
+                  {c.kind === 'timelock' ? (
+                    <span className="text-safe">否 · 已剔除</span>
+                  ) : (
+                    <span className="text-warn">是 · 可随时转出</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] leading-relaxed text-ink-400">
+        {locks.length > 0 && (
+          <>
+            锁仓仓位已从 Top10 与巨鲸判断中剔除。解锁时间当前读不到（托管账户是 PDA），
+            如实标为「待接入」——<span className="text-ink-300">这不是「已解锁」</span>
+            ，到期日请另行确认。
+          </>
+        )}
+        {locks.length > 0 && others.length > 0 && ' '}
+        {others.length > 0 && (
+          <>
+            {others.length} 个仓位由程序托管，但
+            <span className="text-ink-300">多签/托管不是时间锁</span>
+            ，可随时签名转出，因此
+            <span className="text-warn">仍然计入集中度</span>，只是单独列出。
+          </>
+        )}
+      </p>
+    </section>
+  );
+}
+
+function shortAddr(a: string): string {
+  return a.length > 12 ? `${a.slice(0, 5)}…${a.slice(-5)}` : a;
 }
 
 function num(v: unknown): string {

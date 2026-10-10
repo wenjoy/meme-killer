@@ -23,11 +23,17 @@
  *   只能靠 `accountData` 的余额变化判断买卖方向。
  */
 import { Connection, PublicKey } from '@solana/web3.js';
-import { BURN_ADDRESSES, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@/core/constants';
+import {
+  BURN_ADDRESSES,
+  CUSTODY_PROGRAMS,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+} from '@/core/constants';
 import type {
   ContractInfo,
   DeveloperInfo,
   FieldOrigin,
+  HolderCustody,
   LiquidityInfo,
   RawHolder,
   SocialInfo,
@@ -345,6 +351,8 @@ export interface HeliusTx {
     nativeBalanceChange?: number;
     tokenBalanceChanges?: TokenBalanceChange[];
   }[];
+  /** 交易里调用的指令（含 programId）—— 用于反查托管程序 */
+  instructions?: { programId?: string; program?: string }[];
   events?: {
     swap?: {
       tokenInputs?: {
@@ -518,10 +526,42 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
       }
       const isBurn = BURN_ADDRESSES.has(owner);
       // 池识别不在这里做：真实池地址是随机 base58，靠地址文本猜不出来。
-      // 由 pools.ts 用确定性 PDA 推导 + DexScreener pair + 成交对手方完成，
+      // 由 pools.ts 用确定性 PDA 推导 + DexScreener pair 完成，
       // 结果在 mergeInputs 里回填。此处只标记 burn。
-      holders.push({ address: owner, amount, pct, isBurn, label: isBurn ? 'burn' : undefined });
+      holders.push({
+        address: owner,
+        tokenAccount: acc.address.toBase58(),
+        amount,
+        pct,
+        isBurn,
+        label: isBurn ? 'burn' : undefined,
+      });
     });
+
+    // 托管持仓识别：区分「个人巨鲸」与「锁仓 / 多签 / 程序托管」。
+    // 失败不影响主流程，但必须在 warnings 里说明，不能静默当作普通持仓。
+    if (holders.length > 0 && supply > 0) {
+      const custody = await detectCustody(
+        connection,
+        holders.map((h) => ({ owner: h.address, tokenAccount: h.tokenAccount ?? '' })),
+        warnings,
+      );
+      if (custody.size > 0) {
+        for (const h of holders) {
+          const c = custody.get(h.address);
+          if (c) h.custody = c;
+        }
+        const locks = holders.filter((h) => h.custody?.kind === 'timelock');
+        if (locks.length > 0) {
+          const lockPct = locks.reduce((s, h) => s + (h.pct ?? 0), 0);
+          warnings.push(
+            `识别到 ${locks.length} 个时间锁仓持仓（合计 ${lockPct.toFixed(1)}%）：` +
+              `${locks.map((h) => h.custody!.label).join('、')}。` +
+              '已从集中度与巨鲸计算中剔除，并单独列出。解锁时间当前无法读取（托管账户是 PDA），标为「待接入」。',
+          );
+        }
+      }
+    }
     origins.holders = 'onchain';
 
     if (supply === 0) {
@@ -937,6 +977,124 @@ export async function fetchDeveloper(
   }
 
   return { developer: dev, warnings: localWarnings, origin: 'onchain' };
+}
+
+/**
+ * 判断一批持仓地址里，哪些是**由程序控制**（锁仓 / 多签 / 托管），
+ * 而不是个人钱包。
+ *
+ * 方法（实测有效，依据都来自链上）：
+ * 1. 一次性批量读这些 owner 的账户。普通钱包一定有账户（要放 SOL）；
+ *    PDA 没有账户 —— 这正是托管仓位的特征。
+ * 2. 对没有账户的 owner，用它的 **token account 的最早一笔交易**
+ *    取出参与的程序 id，匹配 `CUSTODY_PROGRAMS`。
+ *
+ * ⚠️ 两条铁律：
+ * - **确认不了就不分类**。拿不到程序 id 就当普通持仓，宁可少剔除，
+ *   也不能把能随时砸盘的大户误判成锁仓 —— 那是危险的漏报。
+ * - **只有 timelock 会被剔除**（由 EXCLUDED_HOLDER_KINDS 决定）。
+ *   多签是可随时转出的，只标注不剔除。
+ */
+async function detectCustody(
+  connection: Connection,
+  holders: { owner: string; tokenAccount: string }[],
+  warnings: string[],
+): Promise<Map<string, HolderCustody>> {
+  const result = new Map<string, HolderCustody>();
+  if (holders.length === 0) return result;
+
+  // 1. 批量查 owner 账户是否存在（100 个一批）
+  const owners: string[] = [];
+  const dedup = new Map<string, string>(); // owner -> tokenAccount
+  for (const h of holders) {
+    if (!h.owner || dedup.has(h.owner)) continue;
+    // 全零/系统地址不参与（burn 已单独处理）
+    dedup.set(h.owner, h.tokenAccount);
+    owners.push(h.owner);
+  }
+
+  const existing = new Set<string>();
+  try {
+    for (let i = 0; i < owners.length; i += 100) {
+      const chunk = owners.slice(i, i + 100).map((a) => new PublicKey(a));
+      const infos = await connection.getMultipleAccountsInfo(chunk);
+      infos.forEach((info, j) => {
+        // 有账户 = 普通钱包（或可执行程序）；无账户 = PDA 候选
+        if (info !== null) existing.add(owners[i + j]);
+      });
+    }
+  } catch (err) {
+    warnings.push(`托管持仓识别失败（无法批量读取 owner 账户）：${msg(err)}`);
+    return result;
+  }
+
+  // 2. 对 PDA 候选反查控制程序
+  const candidates = owners.filter((o) => !existing.has(o));
+  if (candidates.length === 0) return result;
+
+  // 没有 Enhanced API 就无法反查程序 → 不猜，直接跳过
+  if (!hasEnhancedApi()) {
+    warnings.push(
+      `发现 ${candidates.length} 个疑似程序控制的持仓，但未配置 Helius API key，` +
+        '无法确认控制程序，因此一律按普通持仓计入集中度（不做剔除）。',
+    );
+    return result;
+  }
+
+  const CAP = 12; // 控制请求量：只反查最重要的前若干个
+  const unmatched: string[] = [];
+  const probe = candidates.slice(0, CAP);
+  const traced = await Promise.allSettled(
+    probe.map((owner) => enhancedTxs(dedup.get(owner)!, { limit: 1, sortOrder: 'asc' })),
+  );
+
+  probe.forEach((owner, i) => {
+    const res = traced[i];
+    if (res.status !== 'fulfilled') return;
+    const tx = res.value[0];
+    if (!tx) return;
+
+    // 取出这笔交易里出现的所有程序 id
+    const programIds = new Set<string>();
+    for (const ix of tx.instructions ?? []) {
+      if (ix.programId) programIds.add(ix.programId);
+    }
+
+    // ⚠️ **只认登记表里核实过的程序**。
+    // 早期版本会把交易里第一个非系统程序当成「控制方」，实测会翻车：
+    // 某个 pump.fun 代币的 5 个持仓被标成「托管程序 DF1ow4…」，
+    // 而 DF1ow4… 实为 SOLANA_PROGRAM_LIBRARY（程序库），根本不是托管方。
+    // 名字猜错比不标更糟 —— 所以未登记的程序一律不写进 custody，
+    // 只在 warnings 里计数，让「有多少个疑似托管」这件事透明可见。
+    for (const pid of programIds) {
+      const known = CUSTODY_PROGRAMS[pid];
+      if (known) {
+        result.set(owner, {
+          programId: pid,
+          kind: known.kind,
+          label: known.label,
+          unlockAtUnknown: known.kind === 'timelock', // 锁仓的解锁时间当前读不到
+        });
+        return;
+      }
+    }
+    unmatched.push(owner);
+  });
+
+  if (unmatched.length > 0) {
+    warnings.push(
+      `另有 ${unmatched.length} 个持仓的 owner 没有账户（疑似程序控制），但控制程序不在已核实名单里，` +
+        '因此**不标注、也不剔除**，一律按普通持仓计入集中度。',
+    );
+  }
+
+  if (candidates.length > CAP) {
+    warnings.push(
+      `有 ${candidates.length} 个疑似程序控制的持仓，只反查了前 ${CAP} 个；` +
+        '其余按普通持仓计入集中度（偏保守）。',
+    );
+  }
+  return result;
 }
 
 /** 社交数据：Helius 不提供，保留占位以便将来接第三方 */

@@ -487,3 +487,116 @@ test('【回归】dev 的筹码不能被当成流动性池剔除', () => {
   assert.equal(m.byKind && (m as never as { byKind: { pool: number } }).byKind.pool, 0, '不得把 dev 记成池');
   assert.equal(r.dimensions.holders.vetoed, true, 'Top10 93% 必须触发集中度否决');
 });
+
+// ── 锁仓 / 托管持仓：锁仓剔除但必须列出，多签只列出不剔除 ──────────
+test('时间锁仓从集中度中剔除，但仍被单独列出（不能剔除后看不见）', () => {
+  const data = input({
+    holders: [
+      // 锁仓 50%：解锁前不能卖，所以不计入 Top10
+      {
+        address: 'LockedVault111111111111111111111111111111',
+        amount: 0,
+        pct: 50,
+        custody: {
+          programId: 'LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn',
+          kind: 'timelock',
+          label: 'Jupiter Lock（锁仓）',
+          unlockAtUnknown: true,
+        },
+      },
+      ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 2 })),
+    ],
+  });
+  const r = analyzeHolders(data);
+
+  assert.equal(r.metrics!.timelockPct, 50, '锁仓占比应被统计');
+  assert.equal(r.metrics!.top10Pct, 20, 'Top10 只应算 10 个散户 = 20%，不含锁仓');
+  assert.equal(r.vetoed, false, '锁仓不该触发集中度否决');
+
+  // 必须列出来，而不是悄悄剔除
+  const list = r.metrics!.custody as { kind: string; pct: number; unlockAtUnknown?: boolean }[];
+  assert.equal(list.length, 1, '锁仓仓位必须出现在 custody 列表里');
+  assert.equal(list[0].kind, 'timelock');
+  assert.equal(list[0].pct, 50);
+  assert.equal(list[0].unlockAtUnknown, true, '解锁时间读不到时必须标为未知，不能留空冒充「无锁」');
+
+  const f = r.findings.find((x) => x.title.includes('锁仓持仓'));
+  assert.ok(f, '应有专门的锁仓 finding');
+  assert.ok(f.detail.includes('待接入'), '解锁时间未知必须如实说明');
+});
+
+test('多签/程序托管**不**剔除，仍计入集中度（防止把能砸盘的巨鲸放过去）', () => {
+  const data = input({
+    holders: [
+      {
+        address: 'SquadsMultisig111111111111111111111111111',
+        amount: 0,
+        pct: 50,
+        custody: {
+          programId: 'SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf',
+          kind: 'multisig',
+          label: 'Squads 多签金库',
+        },
+      },
+      ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 2 })),
+    ],
+  });
+  const r = analyzeHolders(data);
+
+  assert.equal(r.metrics!.timelockPct, 0, '多签不是时间锁');
+  assert.equal(r.metrics!.otherCustodyPct, 50, '多签应单独统计');
+  // 多签占掉前 10 的一个名额：50% + 其余 9 个散户 × 2% = 68%
+  assert.equal(r.metrics!.top10Pct, 68, '多签 50% 必须计入 Top10（50 + 9×2）');
+  assert.equal(r.vetoed, true, '50% 的多签足以砸盘，必须触发集中度否决');
+
+  const f = r.findings.find((x) => x.title.includes('程序托管持仓'));
+  assert.ok(f, '应有托管持仓 finding');
+  assert.ok(f.detail.includes('不是时间锁'), '必须说清多签不是时间锁');
+});
+
+test('同一批持仓，把锁仓误判为普通持仓会得出完全相反的结论', () => {
+  // 对照组：50% 的仓位是「散户」，会立刻触发 Top10 否决
+  const asRetail = analyzeHolders(
+    input({
+      holders: [
+        { address: 'Whale11111111111111111111111111111111111', amount: 0, pct: 50 },
+        ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 2 })),
+      ],
+    }),
+  );
+  assert.equal(asRetail.vetoed, true, '当作散户时会否决');
+
+  // 若真为锁仓，则不该否决 —— 说明「识别锁仓」这一步直接决定结论
+  const asLock = analyzeHolders(
+    input({
+      holders: [
+        {
+          address: 'Whale11111111111111111111111111111111111',
+          amount: 0,
+          pct: 50,
+          custody: { programId: 'LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn', kind: 'timelock', label: 'L' },
+        },
+        ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 2 })),
+      ],
+    }),
+  );
+  assert.equal(asLock.vetoed, false, '识别为锁仓后不应否决');
+});
+
+test('多签即使很大也算巨鲸（托管 ≠ 锁定）', () => {
+  const data = input({
+    holders: [
+      {
+        address: 'SquadsMultisig222222222222222222222222222',
+        amount: 0,
+        pct: 30,
+        custody: { programId: 'SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf', kind: 'multisig', label: 'Squads 多签金库' },
+      },
+      ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 1 })),
+    ],
+  });
+  const r = analyzeHolders(data);
+  const f = r.findings.find((x) => x.title === '存在单一巨鲸');
+  assert.ok(f, '多签持仓超过阈值时仍应报巨鲸，因为多签可随时签名转出');
+  assert.ok(f.detail.includes('托管不等于锁定'));
+});

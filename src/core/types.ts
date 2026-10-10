@@ -9,6 +9,26 @@
  * 而不是拿 undefined 算出一个看起来很确定的错误分数。
  */
 
+/** 控制该仓位的第三方程序类型 */
+export type CustodyKind = 'timelock' | 'multisig' | 'unknown-program';
+
+/** 一个持仓被哪个程序托管 —— 用于区分「个人巨鲸」与「锁仓/多签」 */
+export interface HolderCustody {
+  programId: string;
+  kind: CustodyKind;
+  label: string;
+  /**
+   * 解锁时间。
+   *
+   * ⚠️ 当前**读不到**：托管仓位的 owner 是 PDA，而 PDA 本身没有账户，
+   * 拿不到托管账户就无法解析解锁计划；要读必须按程序逐个推导种子 + 解析布局。
+   * 因此这里保留字段但标 `unlockAtUnknown`，UI 必须如实显示「待接入」，
+   * 不能显示成「已解锁」或留空让人误以为没有锁。
+   */
+  unlockAt?: string;
+  unlockAtUnknown?: boolean;
+}
+
 /** 一个持有者条目 */
 export interface RawHolder {
   address: string;
@@ -23,6 +43,10 @@ export interface RawHolder {
   isSniper?: boolean;
   /** 辅助匹配用的标签，例如 "Raydium AMM Pool" */
   label?: string;
+  /** 该持仓的 token account（用于反查控制程序） */
+  tokenAccount?: string;
+  /** 若该仓位由程序控制（锁仓/多签/托管），记录控制方 */
+  custody?: HolderCustody;
 }
 
 export interface TokenInfo {
@@ -173,8 +197,19 @@ export interface DimensionResult {
   score: number;
   vetoed: boolean;
   findings: Finding[];
-  metrics?: Record<string, number | string | Record<string, number>>;
+  metrics?: Record<string, number | string | Record<string, number> | CustodyMetric[]>;
   error?: string;
+}
+
+/** 供 UI 直接渲染的托管持仓列表项 */
+export interface CustodyMetric {
+  address: string;
+  kind: CustodyKind;
+  label: string;
+  pct: number;
+  amount: number;
+  unlockAt?: string;
+  unlockAtUnknown?: boolean;
 }
 
 export interface RiskBand {

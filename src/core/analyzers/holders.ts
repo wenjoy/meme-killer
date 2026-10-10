@@ -6,10 +6,40 @@
  * burn 地址剔除，任何正常项目都会被算成「Top10 控盘 80%」。
  * 所以正确顺序是：**先分类剔除 → 再算非池持仓占比**。
  */
-import { BURN_ADDRESSES, POOL_LABEL_PATTERN, THRESHOLDS, scoreFromFindings } from '../constants';
-import type { DimensionResult, Finding, RawHolder, ScanInput, Severity } from '../types';
+import {
+  BURN_ADDRESSES,
+  EXCLUDED_HOLDER_KINDS,
+  POOL_LABEL_PATTERN,
+  THRESHOLDS,
+  scoreFromFindings,
+} from '../constants';
+import type {
+  CustodyMetric,
+  DimensionResult,
+  Finding,
+  RawHolder,
+  ScanInput,
+  Severity,
+} from '../types';
 
-export type HolderKind = 'pool' | 'burn' | 'dev' | 'team' | 'sniper' | 'retail';
+/**
+ * `timelock` = 时间锁仓（从集中度剔除，但单独列出）
+ * `custody`  = 其他程序托管（多签/未知托管）：**不剔除**，因为它们能随时转出
+ */
+export type HolderKind =
+  | 'pool'
+  | 'burn'
+  | 'timelock'
+  | 'custody'
+  | 'dev'
+  | 'team'
+  | 'sniper'
+  | 'retail';
+
+/** 该持仓是否从流通盘/集中度里剔除 */
+export function isExcludedKind(kind: HolderKind): boolean {
+  return EXCLUDED_HOLDER_KINDS.has(kind);
+}
 
 /** 把一个持有者归类 */
 export function classifyHolder(
@@ -18,11 +48,17 @@ export function classifyHolder(
 ): HolderKind {
   const { creator, poolAddresses, burnAddresses = BURN_ADDRESSES } = opts;
   const addr = holder.address ?? '';
-  // 显式池地址（从链上解析到的 curve / AMM vault）优先级最高
+  // 优先级原则：**链上确认的事实 > 文本启发式**。
+  // 池标签只是拿地址/标签字符串正则碰运气，而 custody 是从链上反查出来的
+  // 确证事实。曾经把文本启发式排在前面，结果地址里带 "vault" 的
+  // 已确认锁仓仓位被误判成池并静默剔除 —— 既没列出、也没算进集中度。
   if (poolAddresses?.has(addr)) return 'pool';
   if (holder.isPool) return 'pool';
-  if (POOL_LABEL_PATTERN.test(addr) || POOL_LABEL_PATTERN.test(holder.label ?? '')) return 'pool';
   if (holder.isBurn || burnAddresses.has(addr)) return 'burn';
+  // 托管判定放在 dev/team 之前：锁仓仓位即便属于 dev，也不该按「可随时砸盘」算
+  if (holder.custody?.kind === 'timelock') return 'timelock';
+  if (holder.custody) return 'custody';
+  if (POOL_LABEL_PATTERN.test(addr) || POOL_LABEL_PATTERN.test(holder.label ?? '')) return 'pool';
   if (creator && addr === creator) return 'dev';
   if (holder.isTeamWallet) return 'team';
   if (holder.isSniper) return 'sniper';
@@ -65,14 +101,25 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     // 按持仓从大到小排，保证 Top10 取的是真正的前十
     .sort((a, b) => b.pct - a.pct);
 
-  const byKind: Record<HolderKind, number> = { pool: 0, burn: 0, dev: 0, team: 0, sniper: 0, retail: 0 };
+  const byKind: Record<HolderKind, number> = {
+    pool: 0,
+    burn: 0,
+    timelock: 0,
+    custody: 0,
+    dev: 0,
+    team: 0,
+    sniper: 0,
+    retail: 0,
+  };
   let excludedPct = 0;
   for (const h of classified) {
     byKind[h.kind] += h.pct;
-    if (h.kind === 'pool' || h.kind === 'burn') excludedPct += h.pct;
+    if (isExcludedKind(h.kind)) excludedPct += h.pct;
   }
 
-  const circulating = classified.filter((h) => h.kind !== 'pool' && h.kind !== 'burn');
+  // ⚠️ custody（多签/未知托管）**不剔除** —— 它们能随时把币转出来，
+  // 计入集中度才是保守且正确的做法。
+  const circulating = classified.filter((h) => !isExcludedKind(h.kind));
   const top10Pct = circulating.slice(0, 10).reduce((s, h) => s + h.pct, 0);
   const largest = circulating[0];
   const devClusterPct = circulating
@@ -93,7 +140,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     add(
       'good',
       '已剔除池与销毁地址',
-      `剔除 ${excludedPct.toFixed(1)}% 的池/burn 持仓后再计算集中度，避免把正常流动性误判为庄家控盘。` +
+      `剔除 ${excludedPct.toFixed(1)}% 的池 / burn / 锁仓持仓后再计算集中度，避免把正常流动性误判为庄家控盘。` +
         `真实流通盘 ${(100 - excludedPct).toFixed(1)}%。`,
     );
   }
@@ -101,7 +148,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   if (top10Pct > t.top10Danger) {
     veto(
       'Top10 持仓过度集中',
-      `剔除池与 burn 后，前 10 大持有者占流通盘 ${top10Pct.toFixed(1)}%（阈值 ${t.top10Danger}%）。少数地址可轻易砸盘。`,
+      `剔除池 / burn / 锁仓后，前 10 大持有者占流通盘 ${top10Pct.toFixed(1)}%（阈值 ${t.top10Danger}%）。少数地址可轻易砸盘。`,
     );
   } else if (top10Pct > t.top10Warn) {
     add('medium', 'Top10 持仓偏集中', `前 10 大持有者占流通盘 ${top10Pct.toFixed(1)}%，超过 ${t.top10Warn}% 警戒线。`);
@@ -109,11 +156,54 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     add('good', '持仓分布健康', `前 10 大持有者仅占流通盘 ${top10Pct.toFixed(1)}%。`);
   }
 
-  if (largest && largest.kind === 'retail' && largest.pct > t.singleWalletWarn) {
+  // 巨鲸判断针对「能随时卖出」的持仓。多签/托管能随时转出，所以算；
+  // 时间锁仓不能卖，已在 circulating 里被剔除，不会走到这里。
+  if (largest && largest.kind !== 'dev' && largest.kind !== 'team' && largest.pct > t.singleWalletWarn) {
+    const who = largest.custody ? `程序托管仓位（${largest.custody.label}）` : '非 dev/team 钱包';
     add(
       largest.pct > 20 ? 'high' : 'medium',
       '存在单一巨鲸',
-      `非 dev/team 钱包 ${largest.address} 持有 ${largest.pct.toFixed(1)}%，其抛售会造成显著滑点。`,
+      `${who} ${largest.address} 持有 ${largest.pct.toFixed(1)}%，其抛售会造成显著滑点。` +
+        (largest.custody ? '（托管不等于锁定：多签可随时签名转出，故仍计入巨鲸判定。）' : ''),
+    );
+  }
+
+  // ── 托管持仓：锁仓剔除但必须列出，多签只列出不剔除 ──────────────
+  const custodyList: CustodyMetric[] = classified
+    // 余额为 0 的托管账户是「锁仓已全部解锁/领取」后留下的空账户，
+    // 列出来只会变成噪音（实测某 pump.fun 代币的 Jupiter Lock 账户余额就是 0）。
+    .filter((h) => h.custody && h.pct > 0)
+    .map((h) => ({
+      address: h.address,
+      kind: h.custody!.kind,
+      label: h.custody!.label,
+      pct: h.pct,
+      amount: h.amount,
+      unlockAt: h.custody!.unlockAt,
+      unlockAtUnknown: h.custody!.unlockAtUnknown,
+    }));
+  const timelockPct = byKind.timelock;
+  const otherCustodyPct = byKind.custody;
+
+  if (timelockPct > 0) {
+    const locks = custodyList.filter((c) => c.kind === 'timelock');
+    add(
+      'good',
+      `锁仓持仓 ${timelockPct.toFixed(1)}%（已从集中度中剔除）`,
+      `${locks.length} 个时间锁仓仓位（${[...new Set(locks.map((l) => l.label))].join('、')}）合计 ${timelockPct.toFixed(1)}%，` +
+        '解锁前无法卖出，因此不计入 Top10 与巨鲸判断。' +
+        '⚠️ 解锁时间当前读不到（托管账户是 PDA，拿不到账户解析解锁计划），如实标为「待接入」—— ' +
+        '这不是「已解锁」，到期日需要你另行留意。',
+    );
+  }
+
+  if (otherCustodyPct > 0) {
+    const others = custodyList.filter((c) => c.kind !== 'timelock');
+    add(
+      'medium',
+      `程序托管持仓 ${otherCustodyPct.toFixed(1)}%（未剔除）`,
+      `${others.length} 个仓位由程序控制（${[...new Set(others.map((o) => o.label))].join('、')}），合计 ${otherCustodyPct.toFixed(1)}%。` +
+        '⚠️ 多签/托管**不是时间锁**，可随时签名转出，因此仍然计入集中度，只是单独列出让你看得见。',
     );
   }
 
@@ -146,6 +236,9 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       holderCount,
       circulatingCount: circulating.length,
       byKind,
+      custody: custodyList,
+      timelockPct,
+      otherCustodyPct,
     },
   };
 }

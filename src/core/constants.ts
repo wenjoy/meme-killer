@@ -134,3 +134,32 @@ export function scoreFromFindings(findings: { severity: string }[], cap = 100): 
   const rest = weights.reduce((s, w) => s + w, 0) - worst;
   return Math.min(cap, worst + rest * 0.25);
 }
+
+// ── 第三方托管程序（锁仓 / 多签）────────────────────────────────────
+//
+// 判定「这个仓位是不是被程序控制」的依据：token account 的 authority
+// （owner）不是一个普通钱包，而是某个程序的 PDA —— 可以用该 token account
+// 的**创建交易里出现的 program id** 来确定是哪个程序（实测有效）。
+//
+// ⚠️ 只有 `timelock` 允许从集中度/巨鲸计算里剔除。
+// `multisig` **不是时间锁**：多签金库可以随时凑齐签名转出，把它当锁仓
+// 剔除等于把真巨鲸放过去 —— 属于危险的漏报，绝不可以。
+//
+// 程序 id 均来自真实链上数据（用 JUP 前 20 大持仓反查控制程序得到），
+// 不是猜测。新增条目必须先核实再写入。
+export type CustodyKind = 'timelock' | 'multisig' | 'unknown-program';
+
+export const CUSTODY_PROGRAMS: Record<string, { kind: CustodyKind; label: string }> = {
+  // Jupiter Lock：线性归属/锁仓，有解锁时间
+  LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn: { kind: 'timelock', label: 'Jupiter Lock（锁仓）' },
+  // Squads 多签金库：可随时签名转出，不剔除
+  SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf: { kind: 'multisig', label: 'Squads 多签金库' },
+};
+
+/**
+ * 从「流通盘 / 集中度 / 巨鲸」计算里剔除的持仓类型。
+ *
+ * 注意 `custody`（多签、未知托管）**不在**这里 —— 它们能随时卖出，
+ * 必须计入集中度，只是单独标注出来让用户看得见。
+ */
+export const EXCLUDED_HOLDER_KINDS = new Set(['pool', 'burn', 'timelock']);
