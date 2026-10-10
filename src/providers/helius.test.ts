@@ -135,3 +135,54 @@ test('RetryableError 用尽重试次数后抛出最后一次错误', async () =>
   );
   assert.equal(calls, 3);
 });
+
+// ── 回归测试：转移税字节偏移（真实账户数据）────────────────────────
+// 真实 mint HNHkQkiku8h1sWoWPtq7QC8paEFZYs2J3RpZkGKHSViz 的
+// transferFeeConfig payload。真实费率 = 100 bps = 1%。
+// 读错字段时会把 older.epoch(1053) 当费率，算出 69,009,508 bps。
+const REAL_FEE_PAYLOAD =
+  // configAuthority [0:32]
+  '0783a81526210f94a0e8e84d2087003b3a4260d29ce79dacfe21a4ea771fa628' +
+  // withdrawWithheldAuthority [32:64]
+  '402d5caf7a97c53497658e561b2623d0e38f5340f208add50a4ef4540b0acb2e' +
+  // withheldAmount [64:72]
+  'eae6451027030000' +
+  // older TransferFee [72:90]: epoch(u64) + maximumFee(u64) + bps(u16)
+  '1d04000000000000' + '0080c6a47e8d0300' + '6400' +
+  // newer TransferFee [90:108]
+  '1d04000000000000' + '0080c6a47e8d0300' + '6400';
+
+function mintAccountWithFeeConfig(): Buffer {
+  const payload = Buffer.from(REAL_FEE_PAYLOAD, 'hex');
+  assert.equal(payload.length, 108, '真实 payload 应为 108 字节');
+  const tlv = Buffer.alloc(4);
+  tlv.writeUInt16LE(1, 0); // transferFeeConfig
+  tlv.writeUInt16LE(108, 2);
+  const end = Buffer.alloc(2); // TLV 结束标记
+  return Buffer.concat([Buffer.alloc(166), tlv, payload, end]);
+}
+
+test('转移税：从真实 Token-2022 字节里读出正确的 100 bps', () => {
+  const data = mintAccountWithFeeConfig();
+  const { names, transferFeeBps } = parseToken2022Extensions(data);
+  assert.ok(names.includes('transferFeeConfig'));
+  assert.equal(transferFeeBps, 100, `应为 100 bps（1%），实际 ${transferFeeBps}`);
+  // 明确挡掉曾经读到的那个错值
+  assert.notEqual(transferFeeBps, 69009508);
+});
+
+test('转移税：绝不把 epoch 当成费率（会高出几个数量级）', () => {
+  const data = mintAccountWithFeeConfig();
+  const { transferFeeBps } = parseToken2022Extensions(data);
+  assert.ok(transferFeeBps < 10_000, `费率不应超过 10000 bps，实际 ${transferFeeBps}`);
+});
+
+test('转移税：没有该扩展时费率为 0', () => {
+  const onlyMetadata = Buffer.concat([
+    Buffer.alloc(166),
+    Buffer.from('12004000', 'hex'), // metadataPointer, len=64
+    Buffer.alloc(64),
+    Buffer.alloc(2),
+  ]);
+  assert.equal(parseToken2022Extensions(onlyMetadata).transferFeeBps, 0);
+});

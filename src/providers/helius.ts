@@ -206,15 +206,25 @@ export function parseToken2022Extensions(data: Buffer): {
     if (type === 0) break;
     const name = TLV_EXTENSION_NAMES[type];
     if (name) names.push(name);
-    // transferFeeConfig: authority(32)+withdrawAuthority(32)+older(bps u64,max u64)+newer(...)
     if (type === 1 && len >= 108) {
+      // TransferFeeConfig 布局（实测真实账户 108 字节，紧凑编码）：
+      //   [0:32]    transferFeeConfigAuthority
+      //   [32:64]   withdrawWithheldAuthority
+      //   [64:72]   withheldAmount (u64)
+      //   [72:90]   older TransferFee = { epoch u64, maximumFee u64, bps u16 }  18 字节
+      //   [90:108]  newer TransferFee = 同上
+      //
+      // ⚠️ 这里曾经读错字段：把 older.epoch（u64，实测值 1053）当成费率，
+      // 于是真实 100 bps（=1%）的币被报成 69,009,508 bps（=690,095%）的
+      // 「critical 存在转移税」。epoch 是 u64、数值必然很大，一读错就爆炸。
+      // 费率是 u16，位置固定在 older 的 [88:90] 与 newer 的 [106:108]。
+      const payload = offset + 4;
       try {
-        const base = offset + 4 + 64;
-        const olderFee = Number(data.readBigUInt64LE(base + 8));
-        const newerFee = Number(data.readBigUInt64LE(base + 24));
-        transferFeeBps = Math.max(olderFee, newerFee);
+        const olderBps = data.readUInt16LE(payload + 88);
+        const newerBps = data.readUInt16LE(payload + 106);
+        transferFeeBps = Math.max(olderBps, newerBps);
       } catch {
-        /* 解析失败保持 0，由其它信号兜底 */
+        /* len 声明与实际长度不符时保持 0，由其它信号兜底 */
       }
     }
     offset += 4 + len;

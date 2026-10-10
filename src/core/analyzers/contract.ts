@@ -91,6 +91,9 @@ export function analyzeContract(data: ScanInput): DimensionResult {
   if (c.tokenProgram === TOKEN_2022_PROGRAM_ID) {
     const exts = c.extensions ?? [];
     for (const ext of exts) {
+      // transferFeeConfig 由下方「转移税」分支按**实际 bps 数值**报告，
+      // 这里跳过以免同一个事实出两条 finding（一条没数值、一条有）。
+      if (ext === 'transferFeeConfig') continue;
       const meta = EXTENSION_RISK[ext] ?? {
         severity: 'medium' as Severity,
         label: ext,
