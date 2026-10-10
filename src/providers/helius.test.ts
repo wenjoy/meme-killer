@@ -8,7 +8,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { RetryableError, isLikelyMint, parseToken2022Extensions, withRetry } from './helius.ts';
+import {
+  RetryableError,
+  isLikelyMint,
+  parseMintAccount,
+  parseToken2022Extensions,
+  withRetry,
+} from './helius.ts';
 
 // ── Token-2022 扩展解析 ────────────────────────────────────────────
 // 布局：mint 基础数据(166) 之后是 [u16 type][u16 len][payload]，type=0 结束
@@ -185,4 +191,57 @@ test('转移税：没有该扩展时费率为 0', () => {
     Buffer.alloc(2),
   ]);
   assert.equal(parseToken2022Extensions(onlyMetadata).transferFeeBps, 0);
+});
+
+// ── 回归测试：mint 账户权限解析（真实账户字节）──────────────────────
+// 这两个 bug 都会输出与链上事实相反的结论，必须有真实数据锁住。
+
+// 案例 A：真实代币 6GmtGgjP…pump。
+// tag=0（权限已放弃），但 payload 是**非零残留数据**。
+// 旧代码用「payload 是否等于全零地址」判断，于是误报「铸币权限未放弃」
+// 并触发硬否决 —— 凭空捏造的危险信号。
+const REAL_MINT_TAG0_GARBAGE =
+  '00000000' + // tag = 0 → None，权限已放弃
+  '06c5c1ce638d2567d26468b05eb951d1a28dcc6e123482b5c675149770e62bf2' + // 非零残留，旧代码在此翻车
+  'd87546081d8d0300' + // supply
+  '06' + // decimals = 6
+  '01' + // is_initialized
+  '00000000' + // freeze tag = 0 → 已放弃
+  '00'.repeat(32);
+
+// 案例 B：真实代币 CASHx9KJ…CASH，两个权限都存在。
+// 旧代码把 freeze pubkey 读在 [46:78]，把 tag 混进地址，输出错位地址。
+const REAL_MINT_BOTH_AUTHORITIES =
+  '01000000' + // mint tag = 1 → Some
+  'f2334a917c56ebea16ca2cf9fef67a492b1d6f2004553f8e78b2e25bc1ed69f2' +
+  'e1dadc40ef730000' + // supply
+  '06' + '01' +
+  '01000000' + // freeze tag = 1 → Some
+  '941e93413ec408e6222a65d0c695aa953b7db0375c0ab0c85cc7388f500a50b6' + // ← 起点是 50，不是 46
+  '00'.repeat(0);
+
+test('权限解析：tag=0 时即使 payload 非零，也必须判为「已放弃」', () => {
+  const r = parseMintAccount(Buffer.from(REAL_MINT_TAG0_GARBAGE, 'hex'));
+  assert.ok(r);
+  assert.equal(r.mintAuthority, null, 'tag=0 就是已放弃，不能去看 payload 字节');
+  assert.equal(r.freezeAuthority, null);
+  assert.equal(r.decimals, 6);
+});
+
+test('权限解析：绝不把 COption 的残留 payload 当成有效地址', () => {
+  const r = parseMintAccount(Buffer.from(REAL_MINT_TAG0_GARBAGE, 'hex'));
+  // 旧代码在这里得到 'TSLvdd1p…' 并据此报「铸币权限未放弃」
+  assert.notEqual(r?.mintAuthority, 'TSLvdd1p');
+  assert.ok(!r?.mintAuthority, '不应产出任何地址');
+});
+
+test('权限解析：tag=1 时读出的两个地址都正确（freeze 在 [50:82]）', () => {
+  const r = parseMintAccount(Buffer.from(REAL_MINT_BOTH_AUTHORITIES, 'hex'));
+  assert.ok(r);
+  assert.equal(r.mintAuthority, 'HJT2TXrhbWta2ax7V86vcnmX7ZmAVzua4v2yrGwchXB7');
+  assert.equal(r.freezeAuthority, 'AyCP3oW19DHZKvx8oU6mvseW2qn7XfmQ5STrXPa6prY5');
+});
+
+test('权限解析：数据不足 82 字节时返回 null，而不是瞎猜', () => {
+  assert.equal(parseMintAccount(Buffer.alloc(40)), null);
 });

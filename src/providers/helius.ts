@@ -154,6 +154,54 @@ async function rpcCall<T>(method: string, params: unknown): Promise<T> {
   }
 }
 
+/**
+ * 解析 SPL Token Mint 账户（82 字节）。
+ *
+ * 布局：
+ *   [0:4]    mint_authority   COption<Pubkey> 的 tag（0=None, 1=Some）
+ *   [4:36]   mint_authority   Pubkey（**仅当 tag=1 时有意义**）
+ *   [36:44]  supply           u64
+ *   [44]     decimals         u8
+ *   [45]     is_initialized   bool
+ *   [46:50]  freeze_authority COption<Pubkey> 的 tag
+ *   [50:82]  freeze_authority Pubkey（**仅当 tag=1 时有意义**）
+ *
+ * ⚠️ 这里曾经有两个 bug，都会给出与事实相反的结论，必须记住：
+ *
+ * 1. **不能用「pubkey 是否等于全零地址」判断权限是否放弃。**
+ *    COption::None 只保证 tag=0，那 32 字节 payload **不保证是零** ——
+ *    实测真实代币 6GmtGgjP…pump 的 tag=0，但 payload 是残留数据
+ *    （base58 解出 TSLvdd1p…），于是「权限已放弃」被误报成
+ *    「铸币权限未放弃」并触发硬否决：一个凭空捏造的危险信号。
+ *    正确做法是先读 tag，tag≠1 就是已放弃。
+ *
+ * 2. **freeze authority 的 pubkey 在 [50:82]，不是 [46:78]。**
+ *    读成 [46:78] 会把 4 字节 tag 当成地址开头，导致地址整体错位
+ *    （多个不同代币都会解出以 4uQe 开头的假地址，因为 tag 都是 01 00 00 00）。
+ *
+ * `mintAuthority`/`freezeAuthority` 为 `null` 表示**已放弃**（COption::None）。
+ */
+export function parseMintAccount(data: Buffer): {
+  mintAuthority: string | null;
+  freezeAuthority: string | null;
+  supply: number;
+  decimals: number;
+} | null {
+  if (data.length < 82) return null;
+  const mintAuthority =
+    data.readUInt32LE(0) === 1 ? new PublicKey(data.subarray(4, 36)).toBase58() : null;
+  const supplyRaw = data.readBigUInt64LE(36);
+  const decimals = data[44];
+  const freezeAuthority =
+    data.readUInt32LE(46) === 1 ? new PublicKey(data.subarray(50, 82)).toBase58() : null;
+  return {
+    mintAuthority,
+    freezeAuthority,
+    supply: Number(supplyRaw) / 10 ** decimals,
+    decimals,
+  };
+}
+
 /** 判断字符串是否像 base58 的 Solana 地址（长度不固定：32–44 字符） */
 export function isLikelyMint(value: string): boolean {
   const v = value.trim();
@@ -386,18 +434,13 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
     }
 
     const data = Buffer.from(info.data);
-    if (data.length >= 82) {
-      const ZERO_PK = '11111111111111111111111111111111';
-      const mintAuthority = new PublicKey(data.subarray(4, 36)).toBase58();
-      const supplyRaw = data.readBigUInt64LE(36);
-      const decimals = data[44];
-      const freezeAuthority = new PublicKey(data.subarray(46, 78)).toBase58();
-
-      contract.mintAuthority = mintAuthority === ZERO_PK ? null : mintAuthority;
-      contract.freezeAuthority = freezeAuthority === ZERO_PK ? null : freezeAuthority;
-      token.decimals = decimals;
-      token.supply = Number(supplyRaw) / 10 ** decimals;
-      contract.supply = token.supply;
+    const parsedMint = parseMintAccount(data);
+    if (parsedMint) {
+      contract.mintAuthority = parsedMint.mintAuthority;
+      contract.freezeAuthority = parsedMint.freezeAuthority;
+      token.decimals = parsedMint.decimals;
+      token.supply = parsedMint.supply;
+      contract.supply = parsedMint.supply;
       origins.token = 'onchain';
     }
 
@@ -488,7 +531,7 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
     } else if (holders.length > 0) {
       warnings.push(
         '链上仅返回前 20 大持仓账户；更深的分布需要索引器。若 AMM 池地址未被识别为池，' +
-          '其持仓会计入集中度，导致 Top10 占比偏高。',
+        '其持仓会计入集中度，导致 Top10 占比偏高。',
       );
     }
   } else {
@@ -714,7 +757,7 @@ export async function fetchMintActivity(
       if (tx.type !== 'CREATE' && tx.type !== 'TOKEN_MINT') {
         warnings.push(
           '最早一笔交易不是创建交易，部署者身份取自该笔的 fee payer，' +
-            '可能是首个买家而非发币人，请人工确认。',
+          '可能是首个买家而非发币人，请人工确认。',
         );
       }
     }
@@ -833,7 +876,7 @@ export async function fetchDeveloper(
     if (dev.devFullyExited === false && holding > 0) {
       localWarnings.push(
         `creator 当前仍持有 ${holding.toLocaleString()} 枚该代币，` +
-          '因此不会判定为「已清仓」（流水比例可能因历史窗口截断而偏高）。',
+        '因此不会判定为「已清仓」（流水比例可能因历史窗口截断而偏高）。',
       );
     }
   } else {
