@@ -8,9 +8,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { PublicKey } from '@solana/web3.js';
 import {
   RetryableError,
   isLikelyMint,
+  parseJupiterLockEscrow,
   parseMintAccount,
   parseToken2022Extensions,
   withRetry,
@@ -244,4 +246,47 @@ test('权限解析：tag=1 时读出的两个地址都正确（freeze 在 [50:82
 
 test('权限解析：数据不足 82 字节时返回 null，而不是瞎猜', () => {
   assert.equal(parseMintAccount(Buffer.alloc(40)), null);
+});
+
+// ── Jupiter Lock 托管账户：解锁时间解析（真实账户原样字节）──────────
+// 这是 9raUVuzeWUk53co63M4WXLWPWE4Xc6Lpn7RS9dnkpump 上那个占 72% 供应量的
+// Jupiter Lock 托管账户（Fw398k4H48GSFnRhrBZPUSRqYQqubiaV5hBFQjRohhp）本体。
+//
+// 偏移不是猜的：该段 [40:72] 解成 base58 **正好等于上面这个 mint**，
+// 且 cliff 额度 + 每期额度 × 期数 = 720,000,000,000,000 最小单位
+// = 720,000,000 枚，与该账户实际持有量吻合。
+const REAL_JUPITER_LOCK_ESCROW =
+  'f477b704497487c3871ba52d7dd67f5b681fd262b6b06f28b3f3c1cae2f668f8d4516d39b682ba688390cdea340d6fa90790c1302ad12ade6df77a48f771d186' +
+  'cb735754a0ad6f9f871ba52d7dd67f5b681fd262b6b06f28b3f3c1cae2f668f8d4516d39b682ba68226f6bbc62b30a188d75e1ba3440626408abad43c886bc1c' +
+  '94079894e137a075ff00000000000000035cbe6a00000000008d27000000000000a0724e1809000000a0724e1809000047000000000000000000000000000000' +
+  '03cf966a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' +
+  '00000000000000000000000000000000000000000000000000000000000000000000000000000000';
+
+test('Jupiter Lock：从真实托管账户读出解锁时间（首次 / 全部）', () => {
+  const s = parseJupiterLockEscrow(Buffer.from(REAL_JUPITER_LOCK_ESCROW, 'hex'));
+  assert.ok(s, '应能解析');
+  assert.equal(new Date(s.cliffAt! * 1000).toISOString(), '2026-10-01T13:11:31.000Z');
+  assert.equal(new Date(s.endsAt! * 1000).toISOString(), '2032-07-01T13:11:31.000Z');
+  assert.equal(s.claimedAmount, 0, '尚未领取');
+  // 10,000,000,000,000（cliff 额度）+ 同样值 × 71 期 = 720,000,000,000,000 最小单位
+  assert.equal(s.totalAmount, 720_000_000_000_000);
+});
+
+test('Jupiter Lock：偏移锚点校验 —— [40:72] 必须就是该 mint', () => {
+  const raw = Buffer.from(REAL_JUPITER_LOCK_ESCROW, 'hex');
+  assert.equal(new PublicKey(raw.subarray(40, 72)).toBase58(),
+    '9raUVuzeWUk53co63M4WXLWPWE4Xc6Lpn7RS9dnkpump');
+  // 首次解锁必须晚于归属开始，且正好相差 1 个周期（30 天）
+  const cliff = Number(raw.readBigUInt64LE(144));
+  const freq = Number(raw.readBigUInt64LE(152));
+  const start = Number(raw.readBigUInt64LE(192));
+  assert.equal(freq, 2_592_000, '周期应为 30 天');
+  assert.equal(cliff - start, freq, 'cliff 应正好是 start + 1 个周期');
+});
+
+test('Jupiter Lock：时间戳不合理时返回 null，绝不编一个日期出来', () => {
+  // 全零账户：若不做合理性校验，会解析出 1970 年的「解锁时间」
+  assert.equal(parseJupiterLockEscrow(Buffer.alloc(296)), null);
+  // 长度不足
+  assert.equal(parseJupiterLockEscrow(Buffer.alloc(100)), null);
 });

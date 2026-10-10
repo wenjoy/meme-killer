@@ -136,6 +136,7 @@ export function scoreFromFindings(findings: { severity: string }[], cap = 100): 
 }
 
 // ── 第三方托管程序（锁仓 / 多签）────────────────────────────────────
+
 //
 // 判定「这个仓位是不是被程序控制」的依据：token account 的 authority
 // （owner）不是一个普通钱包，而是某个程序的 PDA —— 可以用该 token account
@@ -150,8 +151,11 @@ export function scoreFromFindings(findings: { severity: string }[], cap = 100): 
 export type CustodyKind = 'timelock' | 'multisig' | 'unknown-program';
 
 export const CUSTODY_PROGRAMS: Record<string, { kind: CustodyKind; label: string }> = {
-  // Jupiter Lock：线性归属/锁仓，有解锁时间
-  LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn: { kind: 'timelock', label: 'Jupiter Lock（锁仓）' },
+  // Jupiter Lock：线性归属/锁仓，托管账户布局可解析（解析器在 providers/helius.ts）
+  LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn: {
+    kind: 'timelock',
+    label: 'Jupiter Lock（锁仓）',
+  },
   // Squads 多签金库：可随时签名转出，不剔除
   SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf: { kind: 'multisig', label: 'Squads 多签金库' },
 };
@@ -163,3 +167,29 @@ export const CUSTODY_PROGRAMS: Record<string, { kind: CustodyKind; label: string
  * 必须计入集中度，只是单独标注出来让用户看得见。
  */
 export const EXCLUDED_HOLDER_KINDS = new Set(['pool', 'burn', 'timelock']);
+
+/**
+ * 已知 AMM / 联合曲线程序。
+ *
+ * 这些程序**自己拥有**的 token account 就是池子的储备金库，属于流动性，
+ * 必须从「集中度 / 巨鲸」里剔除。靠程序 id 判定比拿地址文本正则碰运气
+ * 可靠得多 —— 实测某代币的 PumpSwap 金库占 5.15%，
+ * 用旧的池识别完全没认出来，被当成大户计入了集中度。
+ *
+ * 每个 id 都用 Helius 交易的 `source` 字段独立核对过，不是凭记忆写的：
+ *   PUMP_AMM / PUMP_FUN / METEORA / ORCA 等。
+ */
+export const AMM_PROGRAMS: Record<string, string> = {
+  // pump.fun 联合曲线
+  '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P': 'pump.fun 联合曲线',
+  // PumpSwap（pump.fun 的 AMM）
+  pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA: 'PumpSwap 池',
+  // Meteora DLMM
+  LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: 'Meteora DLMM 池',
+  // Raydium AMM v4
+  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'Raydium AMM v4 池',
+  // Raydium CPMM
+  CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C: 'Raydium CPMM 池',
+  // Orca Whirlpool
+  whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc: 'Orca Whirlpool 池',
+};

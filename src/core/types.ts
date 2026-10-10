@@ -26,6 +26,12 @@ export interface HolderCustody {
    * 不能显示成「已解锁」或留空让人误以为没有锁。
    */
   unlockAt?: string;
+  /** 全部解锁完成的时间（线性归属的最后一期） */
+  unlockEndAt?: string;
+  /** 已领取数量（最小单位），用于判断「锁仓是否已经在释放」 */
+  claimedAmount?: number;
+  /** 锁仓总量（最小单位） */
+  totalAmount?: number;
   unlockAtUnknown?: boolean;
 }
 
@@ -209,6 +215,9 @@ export interface CustodyMetric {
   pct: number;
   amount: number;
   unlockAt?: string;
+  unlockEndAt?: string;
+  claimedAmount?: number;
+  totalAmount?: number;
   unlockAtUnknown?: boolean;
 }
 

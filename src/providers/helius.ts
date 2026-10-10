@@ -24,6 +24,7 @@
  */
 import { Connection, PublicKey } from '@solana/web3.js';
 import {
+  AMM_PROGRAMS,
   BURN_ADDRESSES,
   CUSTODY_PROGRAMS,
   TOKEN_2022_PROGRAM_ID,
@@ -541,11 +542,24 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
     // 托管持仓识别：区分「个人巨鲸」与「锁仓 / 多签 / 程序托管」。
     // 失败不影响主流程，但必须在 warnings 里说明，不能静默当作普通持仓。
     if (holders.length > 0 && supply > 0) {
-      const custody = await detectCustody(
+      const { custody, pools: ammPools } = await detectCustody(
         connection,
         holders.map((h) => ({ owner: h.address, tokenAccount: h.tokenAccount ?? '' })),
         warnings,
       );
+      // AMM 金库按池剔除（比地址正则可靠得多）
+      for (const h of holders) {
+        const amm = ammPools.get(h.address);
+        if (amm) {
+          h.isPool = true;
+          h.label = amm;
+        }
+      }
+      if (ammPools.size > 0) {
+        warnings.push(
+          `按控制程序识别出 ${ammPools.size} 个 AMM/联合曲线金库（${[...new Set(ammPools.values())].join('、')}），已按流动性池剔除。`,
+        );
+      }
       if (custody.size > 0) {
         for (const h of holders) {
           const c = custody.get(h.address);
@@ -980,122 +994,211 @@ export async function fetchDeveloper(
 }
 
 /**
+ * 解析 Jupiter Lock 的 `VestingEscrow` 账户，读出解锁时间表。
+ *
+ * 布局是**对着真实账户反推并交叉验证过**的，不是猜的：
+ *   [8:40]   recipient
+ *   [40:72]  token_mint      ← 解成 base58 后与查询的 mint 完全一致（锚点校验）
+ *   [72:104] creator
+ *   [104:136] base
+ *   [136]    escrow_bump(u8) + 若干 u8 标志位，到 144 为止
+ *   [144]    cliff_time            (u64, unix 秒) ← 首次解锁
+ *   [152]    frequency             (u64, 秒)      实测 2592000 = 30 天
+ *   [160]    cliff_unlock_amount   (u64, 最小单位)
+ *   [168]    amount_per_period     (u64, 最小单位)
+ *   [176]    number_of_period      (u64)
+ *   [184]    total_claimed_amount  (u64)
+ *   [192]    vesting_start_time    (u64, unix 秒)
+ *
+ * 三条互相独立的校验都通过，因此这个偏移是可信的：
+ *  1. [40:72] 解出的 base58 **正好等于**该账户对应的 mint
+ *  2. cliff_time（2026-10-01）− vesting_start_time（2026-09-01）= 1 个 frequency
+ *  3. cliff 额度 + 每期额度 × 期数 = 10,000,000,000,000 + 同样值 × 71
+ *     = 720,000,000,000,000 最小单位 = **720,000,000 枚**，
+ *     与该托管账户实际持有的 720,000,002 枚（72% 供应量）吻合
+ */
+export function parseJupiterLockEscrow(data: Buffer): {
+  cliffAt?: number;
+  endsAt?: number;
+  totalAmount?: number;
+  claimedAmount?: number;
+} | null {
+  if (data.length < 200) return null;
+  const cliffTime = Number(data.readBigUInt64LE(144));
+  const frequency = Number(data.readBigUInt64LE(152));
+  const cliffUnlock = Number(data.readBigUInt64LE(160));
+  const perPeriod = Number(data.readBigUInt64LE(168));
+  const periods = Number(data.readBigUInt64LE(176));
+  const claimed = Number(data.readBigUInt64LE(184));
+  const startTime = Number(data.readBigUInt64LE(192));
+
+  // 合理性校验：时间戳必须落在 2020–2100，frequency 不能是天文数字。
+  // 校验不过就当解析失败（宁可显示「待接入」也不要报一个错的日期）。
+  const sane = (t: number) => t > 1_577_836_800 && t < 4_102_444_800;
+  if (!sane(cliffTime) || !sane(startTime)) return null;
+  if (frequency <= 0 || frequency > 400 * 24 * 3600) return null;
+
+  // 最后一次解锁：cliff 之后每 frequency 一次，共 periods 次
+  const endsAt = periods > 0 ? cliffTime + frequency * (periods - 1) : cliffTime;
+  return {
+    cliffAt: cliffTime,
+    endsAt,
+    totalAmount: cliffUnlock + perPeriod * periods,
+    claimedAmount: claimed,
+  };
+}
+
+/**
  * 判断一批持仓地址里，哪些是**由程序控制**（锁仓 / 多签 / 托管），
  * 而不是个人钱包。
  *
- * 方法（实测有效，依据都来自链上）：
- * 1. 一次性批量读这些 owner 的账户。普通钱包一定有账户（要放 SOL）；
- *    PDA 没有账户 —— 这正是托管仓位的特征。
- * 2. 对没有账户的 owner，用它的 **token account 的最早一笔交易**
- *    取出参与的程序 id，匹配 `CUSTODY_PROGRAMS`。
+ * 判据是账户的 **owner 程序**，这是权威且廉价的：
+ *   - owner 是 System Program        → 普通钱包
+ *   - owner 是已知托管程序            → 锁仓 / 多签，可读出解锁时间
+ *   - owner 是其它程序                → 程序控制（协议未确认）
+ *   - **查不到账户**（PDA）           → 回退用 token account 的创建交易反查
  *
- * ⚠️ 两条铁律：
- * - **确认不了就不分类**。拿不到程序 id 就当普通持仓，宁可少剔除，
- *   也不能把能随时砸盘的大户误判成锁仓 —— 那是危险的漏报。
- * - **只有 timelock 会被剔除**（由 EXCLUDED_HOLDER_KINDS 决定）。
- *   多签是可随时转出的，只标注不剔除。
+ * ⚠️ 这里曾经有一个会**给出错误结论**的 bug：
+ * 旧代码把「owner 有账户」直接当成「普通钱包」而跳过。但 Jupiter Lock 的
+ * 托管账户（VestingEscrow）**本身就是一个有数据的账户**（296 字节），
+ * owner 正是 Lock 程序。于是 9raUVuzeWUk…pump 上那个占 **72% 供应量**的
+ * 锁仓仓位被当成普通巨鲸，报告给出「持仓集中度过高」的硬否决 ——
+ * 完全错误的结论。
+ * 教训：**「有账户」不等于「是钱包」，要看 owner 程序是谁。**
+ *
+ * 铁律不变：只有 `timelock` 会被剔除；多签/未确认托管照常计入集中度。
  */
 async function detectCustody(
   connection: Connection,
   holders: { owner: string; tokenAccount: string }[],
   warnings: string[],
-): Promise<Map<string, HolderCustody>> {
+): Promise<{ custody: Map<string, HolderCustody>; pools: Map<string, string> }> {
   const result = new Map<string, HolderCustody>();
-  if (holders.length === 0) return result;
+  const pools = new Map<string, string>();
+  if (holders.length === 0) return { custody: result, pools };
 
-  // 1. 批量查 owner 账户是否存在（100 个一批）
-  const owners: string[] = [];
   const dedup = new Map<string, string>(); // owner -> tokenAccount
   for (const h of holders) {
     if (!h.owner || dedup.has(h.owner)) continue;
-    // 全零/系统地址不参与（burn 已单独处理）
     dedup.set(h.owner, h.tokenAccount);
-    owners.push(h.owner);
   }
+  const owners = [...dedup.keys()];
 
-  const existing = new Set<string>();
+  const noAccount: string[] = []; // PDA 候选，走回退路径
   try {
     for (let i = 0; i < owners.length; i += 100) {
       const chunk = owners.slice(i, i + 100).map((a) => new PublicKey(a));
       const infos = await connection.getMultipleAccountsInfo(chunk);
       infos.forEach((info, j) => {
-        // 有账户 = 普通钱包（或可执行程序）；无账户 = PDA 候选
-        if (info !== null) existing.add(owners[i + j]);
+        const owner = owners[i + j];
+        if (info === null) {
+          noAccount.push(owner);
+          return;
+        }
+        const programId = info.owner.toBase58();
+        if (programId === SYSTEM_PROGRAM_ID) return; // 普通钱包
+
+        // AMM / 联合曲线程序拥有的账户 = 池子储备金库 → 剔除
+        const amm = AMM_PROGRAMS[programId];
+        if (amm) {
+          pools.set(owner, amm);
+          return;
+        }
+
+        const known = CUSTODY_PROGRAMS[programId];
+        if (known) {
+          const custody: HolderCustody = {
+            programId,
+            kind: known.kind,
+            label: known.label,
+          };
+          // 锁仓：顺手从托管账户里读出解锁时间
+          if (known.kind === 'timelock') {
+            const schedule =
+              programId === JUPITER_LOCK_PROGRAM_ID
+                ? parseJupiterLockEscrow(Buffer.from(info.data))
+                : null;
+            if (schedule) {
+              custody.unlockAt = new Date(schedule.cliffAt! * 1000).toISOString();
+              custody.unlockEndAt = new Date(schedule.endsAt! * 1000).toISOString();
+              custody.claimedAmount = schedule.claimedAmount;
+              custody.totalAmount = schedule.totalAmount;
+            } else {
+              custody.unlockAtUnknown = true;
+            }
+          }
+          result.set(owner, custody);
+          return;
+        }
+
+        // owner 是一个程序，但不在核实名单里 —— 此时**可以**如实标注程序 id，
+        // 因为这个 id 来自账户的 owner 字段（权威），不是从交易里猜的。
+        result.set(owner, {
+          programId,
+          kind: 'unknown-program',
+          label: `程序托管（${programId.slice(0, 6)}…）`,
+        });
       });
     }
   } catch (err) {
     warnings.push(`托管持仓识别失败（无法批量读取 owner 账户）：${msg(err)}`);
-    return result;
+    return { custody: result, pools };
   }
 
-  // 2. 对 PDA 候选反查控制程序
-  const candidates = owners.filter((o) => !existing.has(o));
-  if (candidates.length === 0) return result;
-
-  // 没有 Enhanced API 就无法反查程序 → 不猜，直接跳过
-  if (!hasEnhancedApi()) {
-    warnings.push(
-      `发现 ${candidates.length} 个疑似程序控制的持仓，但未配置 Helius API key，` +
-        '无法确认控制程序，因此一律按普通持仓计入集中度（不做剔除）。',
+  // 回退：owner 没有账户 → PDA，用 token account 最早一笔交易反查控制程序
+  if (noAccount.length > 0 && hasEnhancedApi()) {
+    const CAP = 12;
+    const probe = noAccount.slice(0, CAP);
+    const unmatched: string[] = [];
+    const traced = await Promise.allSettled(
+      probe.map((owner) => enhancedTxs(dedup.get(owner)!, { limit: 1, sortOrder: 'asc' })),
     );
-    return result;
-  }
-
-  const CAP = 12; // 控制请求量：只反查最重要的前若干个
-  const unmatched: string[] = [];
-  const probe = candidates.slice(0, CAP);
-  const traced = await Promise.allSettled(
-    probe.map((owner) => enhancedTxs(dedup.get(owner)!, { limit: 1, sortOrder: 'asc' })),
-  );
-
-  probe.forEach((owner, i) => {
-    const res = traced[i];
-    if (res.status !== 'fulfilled') return;
-    const tx = res.value[0];
-    if (!tx) return;
-
-    // 取出这笔交易里出现的所有程序 id
-    const programIds = new Set<string>();
-    for (const ix of tx.instructions ?? []) {
-      if (ix.programId) programIds.add(ix.programId);
-    }
-
-    // ⚠️ **只认登记表里核实过的程序**。
-    // 早期版本会把交易里第一个非系统程序当成「控制方」，实测会翻车：
-    // 某个 pump.fun 代币的 5 个持仓被标成「托管程序 DF1ow4…」，
-    // 而 DF1ow4… 实为 SOLANA_PROGRAM_LIBRARY（程序库），根本不是托管方。
-    // 名字猜错比不标更糟 —— 所以未登记的程序一律不写进 custody，
-    // 只在 warnings 里计数，让「有多少个疑似托管」这件事透明可见。
-    for (const pid of programIds) {
-      const known = CUSTODY_PROGRAMS[pid];
-      if (known) {
-        result.set(owner, {
-          programId: pid,
-          kind: known.kind,
-          label: known.label,
-          unlockAtUnknown: known.kind === 'timelock', // 锁仓的解锁时间当前读不到
-        });
-        return;
+    probe.forEach((owner, i) => {
+      const res = traced[i];
+      if (res.status !== 'fulfilled') return;
+      const tx = res.value[0];
+      if (!tx) return;
+      const programIds = new Set<string>();
+      for (const ix of tx.instructions ?? []) if (ix.programId) programIds.add(ix.programId);
+      // 只认核实过的程序：从交易里取的 id 不如 owner 字段权威，
+      // 拿它去命名会翻车（曾把 SOLANA_PROGRAM_LIBRARY 当成托管方）。
+      for (const pid of programIds) {
+        const known = CUSTODY_PROGRAMS[pid];
+        if (known) {
+          result.set(owner, {
+            programId: pid,
+            kind: known.kind,
+            label: known.label,
+            unlockAtUnknown: known.kind === 'timelock',
+          });
+          return;
+        }
       }
+      unmatched.push(owner);
+    });
+    if (unmatched.length > 0) {
+      warnings.push(
+        `另有 ${unmatched.length} 个持仓的 owner 是 PDA，但控制程序不在已核实名单里，` +
+          '因此不标注、也不剔除，按普通持仓计入集中度。',
+      );
     }
-    unmatched.push(owner);
-  });
-
-  if (unmatched.length > 0) {
+    if (noAccount.length > CAP) {
+      warnings.push(
+        `有 ${noAccount.length} 个 PDA 持仓，只反查了前 ${CAP} 个；其余按普通持仓处理（偏保守）。`,
+      );
+    }
+  } else if (noAccount.length > 0) {
     warnings.push(
-      `另有 ${unmatched.length} 个持仓的 owner 没有账户（疑似程序控制），但控制程序不在已核实名单里，` +
-        '因此**不标注、也不剔除**，一律按普通持仓计入集中度。',
+      `发现 ${noAccount.length} 个 PDA 持仓，但未配置 Helius API key 无法反查控制程序，` +
+        '一律按普通持仓计入集中度（不做剔除）。',
     );
   }
 
-  if (candidates.length > CAP) {
-    warnings.push(
-      `有 ${candidates.length} 个疑似程序控制的持仓，只反查了前 ${CAP} 个；` +
-        '其余按普通持仓计入集中度（偏保守）。',
-    );
-  }
-  return result;
+  return { custody: result, pools };
 }
+
+const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+const JUPITER_LOCK_PROGRAM_ID = 'LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn';
 
 /** 社交数据：Helius 不提供，保留占位以便将来接第三方 */
 export function fetchSocial(): SocialInfo | null {

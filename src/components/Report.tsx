@@ -409,7 +409,12 @@ function CustodySection({ report }: { report: ScanReport }) {
                   {c.kind !== 'timelock' ? (
                     <span className="text-ink-400">—（非时间锁）</span>
                   ) : c.unlockAt ? (
-                    <span className="text-warn">{c.unlockAt}</span>
+                    <span className="text-warn">
+                      首次 {c.unlockAt.slice(0, 10)}
+                      {c.unlockEndAt && (
+                        <span className="block text-ink-400">全部 {c.unlockEndAt.slice(0, 10)}</span>
+                      )}
+                    </span>
                   ) : (
                     <span
                       className="text-ink-400"
@@ -434,9 +439,22 @@ function CustodySection({ report }: { report: ScanReport }) {
       <p className="text-[11px] leading-relaxed text-ink-400">
         {locks.length > 0 && (
           <>
-            锁仓仓位已从 Top10 与巨鲸判断中剔除。解锁时间当前读不到（托管账户是 PDA），
-            如实标为「待接入」——<span className="text-ink-300">这不是「已解锁」</span>
-            ，到期日请另行确认。
+            锁仓仓位已从 Top10 与巨鲸判断中剔除。
+            {locks.some((l) => l.unlockAt) ? (
+              <>
+                解锁时间取自锁仓程序自己的托管账户。
+                <span className="text-ink-300">
+                  锁仓会随时间线性释放，解锁后即可抛售
+                </span>
+                ，不是「一直锁着」。
+              </>
+            ) : (
+              <>
+                解锁时间当前读不到，如实标为「待接入」——
+                <span className="text-ink-300">这不是「已解锁」</span>
+                ，到期日请另行确认。
+              </>
+            )}
           </>
         )}
         {locks.length > 0 && others.length > 0 && ' '}

@@ -180,6 +180,9 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       pct: h.pct,
       amount: h.amount,
       unlockAt: h.custody!.unlockAt,
+      unlockEndAt: h.custody!.unlockEndAt,
+      claimedAmount: h.custody!.claimedAmount,
+      totalAmount: h.custody!.totalAmount,
       unlockAtUnknown: h.custody!.unlockAtUnknown,
     }));
   const timelockPct = byKind.timelock;
@@ -192,8 +195,11 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       `锁仓持仓 ${timelockPct.toFixed(1)}%（已从集中度中剔除）`,
       `${locks.length} 个时间锁仓仓位（${[...new Set(locks.map((l) => l.label))].join('、')}）合计 ${timelockPct.toFixed(1)}%，` +
         '解锁前无法卖出，因此不计入 Top10 与巨鲸判断。' +
-        '⚠️ 解锁时间当前读不到（托管账户是 PDA，拿不到账户解析解锁计划），如实标为「待接入」—— ' +
-        '这不是「已解锁」，到期日需要你另行留意。',
+        (locks.some((l) => l.unlockAt)
+          ? `解锁时间：首次 ${locks.find((l) => l.unlockAt)!.unlockAt!.slice(0, 10)}` +
+            `，全部解锁 ${locks.find((l) => l.unlockEndAt)?.unlockEndAt?.slice(0, 10) ?? '—'}。` +
+            '⚠️ 锁仓会随时间线性释放，解锁后即可抛售。'
+          : '⚠️ 解锁时间读不到，如实标为「待接入」——这不是「已解锁」，到期日需另行留意。'),
     );
   }
 
