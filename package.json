@@ -9,7 +9,7 @@
     "start": "next start -p 5273",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --import ./src/core/test-setup.mjs --test src/core/engine.test.ts"
+    "test": "node --experimental-strip-types --import ./src/core/test-setup.mjs --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@solana/web3.js": "^1.99.0",

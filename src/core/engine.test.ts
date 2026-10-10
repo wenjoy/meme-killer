@@ -16,7 +16,14 @@ import { analyzeLiquidity } from './analyzers/liquidity.ts';
 import { analyzeContract } from './analyzers/contract.ts';
 import { analyzeSocial } from './analyzers/social.ts';
 import { bandFor, scoreFromFindings } from './constants.ts';
-import { SAMPLES, sampleScanInput } from '../providers/sample.ts';
+import {
+  TEST_META,
+  emptyInput,
+  healthyInput,
+  honeypotInput,
+  openMintInput,
+  rugInput,
+} from './fixtures.ts';
 import type { RawHolder, ScanInput } from './types.ts';
 
 const meta = {
@@ -218,8 +225,8 @@ test('命中否决时综合分必须为满分，不能出现「37 分 + 否决�
   assert.equal(r.band.level, 'CRITICAL');
 });
 
-test('样本 RISK（仅权限未弃）总分应为满分而非中等分', () => {
-  const r = scan(sampleScanInput('openMint')!);
+test('仅权限未弃（其余维度干净）也必须满分，不能被其它维度的低分拉回来', () => {
+  const r = scan(openMintInput());
   assert.equal(r.vetoed, true);
   assert.equal(r.score, 100);
   assert.equal(r.advice.size, '0%');
@@ -309,24 +316,37 @@ test('单个维度抛错不会让整次扫描崩溃，且错误被显式暴露',
   );
 });
 
-test('样本光谱具备区分度：健康项目与 rug 分数必须拉开', () => {
-  const scores = SAMPLES.map((s) => ({
-    key: s.key,
-    ...scan(sampleScanInput(s.key)!),
-  }));
-  const healthy = scores.find((s) => s.key === 'healthy')!;
-  const rug = scores.find((s) => s.key === 'classicRug')!;
+test('模型必须具备区分度：健康 / 蜜罐 / 典型 rug 分数必须拉开', () => {
+  const healthy = scan(healthyInput());
+  const honeypot = scan(honeypotInput());
+  const rug = scan(rugInput());
 
   assert.equal(healthy.vetoed, false, '健康样本不应触发否决');
+  assert.equal(honeypot.vetoed, true, '蜜罐必须触发否决');
   assert.equal(rug.vetoed, true, '典型 rug 必须触发否决');
-  assert.ok(rug.score - healthy.score > 40, `区分度不足：健康 ${healthy.score} vs rug ${rug.score}`);
-  assert.ok(healthy.score < 25, `健康样本应落在低风险区间，实际 ${healthy.score}`);
 
-  // 每个硬否决场景都必须真的触发否决
-  for (const key of ['openMint', 'honeypot', 'classicRug']) {
-    const r = scores.find((s) => s.key === key)!;
-    assert.equal(r.vetoed, true, `${key} 应触发硬否决`);
-  }
+  assert.ok(healthy.score < 25, `健康样本应落在低风险区间，实际 ${healthy.score}`);
+  assert.ok(
+    rug.score - healthy.score > 40,
+    `区分度不足：健康 ${healthy.score} vs rug ${rug.score}`,
+  );
+  // 蜜罐与 rug 都该是满分风险
+  assert.equal(honeypot.score, 100);
+  assert.equal(rug.score, 100);
+
+  // 三种极端场景的仓位建议必须不同 —— 这是用户最终要看的结论
+  assert.equal(healthy.advice.size, '≤ 5%');
+  assert.equal(honeypot.advice.size, '0%');
+  assert.equal(rug.advice.size, '0%');
+});
+
+test('只依赖权限的否决与依赖多项的否决，结论一致（都是一票判死）', () => {
+  const onlyPermission = scan(openMintInput());
+  const everything = scan(rugInput());
+  assert.equal(onlyPermission.score, everything.score, '否决数量不应影响结论强度');
+  assert.equal(onlyPermission.vetoes.length, 1);
+  assert.ok(everything.vetoes.length > 1);
+  assert.equal(onlyPermission.advice.size, everything.advice.size);
 });
 
 test('风险等级边界正确', () => {
@@ -373,10 +393,35 @@ test('开发者/持仓数据缺失时覆盖率必须下降，不能虚高', () =
   assert.equal(partial.advice.size, '—');
 });
 
-test('样本数据覆盖率必须是 100%，否则样本演示会自我矛盾', () => {
-  for (const s of SAMPLES) {
-    const r = scan(sampleScanInput(s.key)!);
-    assert.equal(r.coverage, 100, `${s.key} 覆盖率应为 100%，实际 ${r.coverage}`);
-    assert.notEqual(r.band.label, '数据不足', `${s.key} 不应被判为数据不足`);
+test('五维数据齐全时覆盖率必须是 100%，不能被误判为数据不足', () => {
+  // 覆盖率算错的两种后果都很严重：虚高会把「什么都没查到」包装成完整报告，
+  // 虚低则会把一份完整报告误标为「数据不足」，让用户白白放弃有效结论。
+  for (const [name, data] of [
+    ['healthy', healthyInput()],
+    ['honeypot', honeypotInput()],
+    ['rug', rugInput()],
+    ['openMint', openMintInput()],
+  ] as const) {
+    const r = scan(data);
+    assert.equal(r.coverage, 100, `${name} 覆盖率应为 100%，实际 ${r.coverage}`);
+    assert.notEqual(r.band.label, '数据不足', `${name} 不应被判为数据不足`);
   }
+});
+
+test('社交维度缺失时覆盖率降到 90%，但不应否决整个结论', () => {
+  // 社交数据当前无来源，这是最常见的真实形态：
+  // 少一个 10% 权重的维度，仍然足以给出结论。
+  const data = { ...healthyInput(), social: null };
+  const r = scan(data);
+  assert.equal(r.coverage, 90);
+  assert.notEqual(r.band.label, '数据不足');
+  assert.notEqual(r.advice.size, '—');
+});
+
+test('夹具覆盖了所有极端场景，且都很明确（防止夹具本身退化）', () => {
+  assert.equal(scan(healthyInput()).vetoed, false);
+  assert.equal(scan(honeypotInput()).vetoed, true);
+  assert.equal(scan(rugInput()).vetoed, true);
+  assert.equal(scan(openMintInput()).vetoed, true);
+  assert.equal(scan(emptyInput()).coverage, 0);
 });

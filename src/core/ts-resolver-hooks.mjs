@@ -6,8 +6,12 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
-const PROJECT_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
-const SRC_ROOT = path.join(PROJECT_ROOT, 'src');
+// 本文件位于 <root>/src/core/，所以要上溯两层才是项目根。
+// （上溯一层会得到 src，进而把 @/x 解析成 src/src/x —— 那样任何
+//   使用 @/ 别名的模块一旦被测试 import 就会报「找不到包」。）
+const HERE = path.dirname(fileURLToPath(import.meta.url)); // <root>/src/core
+const PROJECT_ROOT = path.resolve(HERE, '..', '..'); // <root>
+const SRC_ROOT = path.join(PROJECT_ROOT, 'src'); // <root>/src
 
 const CANDIDATES = ['.ts', '.tsx', '/index.ts', '.mjs', '.js'];
 

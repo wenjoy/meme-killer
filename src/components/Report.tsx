@@ -87,7 +87,6 @@ function Provenance({ report }: { report: ScanReport }) {
     onchain: { text: '链上', tone: 'text-safe' },
     dexscreener: { text: 'DexScreener', tone: 'text-accent' },
     heuristic: { text: '推算', tone: 'text-warn' },
-    sample: { text: '样本', tone: 'text-warn' },
     unavailable: { text: '未采集', tone: 'text-ink-400' },
   };
 
@@ -98,7 +97,7 @@ function Provenance({ report }: { report: ScanReport }) {
         <span className="font-mono text-xs text-ink-200">{meta.source}</span>
         {!meta.live && (
           <span className="rounded border border-warn/40 bg-warn/10 px-2 py-0.5 text-[11px] text-warn">
-            演示样本 · 非真实链上数据
+            数据源异常 · 结果不完整
           </span>
         )}
         {meta.elapsedMs !== undefined && (

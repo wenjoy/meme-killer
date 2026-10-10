@@ -125,12 +125,12 @@ export interface ScanInput {
 }
 
 /** 数据来源追踪：每个字段组的可信度 */
-export type FieldOrigin = 'onchain' | 'dexscreener' | 'heuristic' | 'sample' | 'unavailable';
+export type FieldOrigin = 'onchain' | 'dexscreener' | 'heuristic' | 'unavailable';
 
 export interface ScanMeta {
   /** 数据源标识，例如 "solana-rpc + dexscreener" */
   source: string;
-  /** 是否为真实链上数据（false = 样本数据） */
+  /** 是否来自真实数据源。当前恒为 true —— 本项目不提供模拟数据 */
   live: boolean;
   fetchedAt: string;
   /** 各字段组来源，UI 据此标注"推算/缺失" */

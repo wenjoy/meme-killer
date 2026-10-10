@@ -1,6 +1,8 @@
 node_modules
 .next
 out
+# 环境变量含 Helius API key，绝不能入库
+.env
 .env*.local
 .DS_Store
 *.tsbuildinfo
