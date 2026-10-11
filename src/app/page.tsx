@@ -1,21 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { ScanReport } from '@/core/types';
 import { Report } from '@/components/Report';
-
-interface Capability {
-  rpcHost: string;
-  enhancedApi: boolean;
-  note: string;
-}
 
 export default function Home() {
   const [mint, setMint] = useState('');
   const [report, setReport] = useState<ScanReport | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [cap, setCap] = useState<Capability | null>(null);
   /** 深度任务：跑起来后轮询进度，完成后自动重扫（真实成本替换窗口估算） */
   const [deep, setDeep] = useState<{
     pct: number;
@@ -27,14 +20,6 @@ export default function Home() {
     state?: string;
   } | null>(null);
   const [deepError, setDeepError] = useState<string | null>(null);
-
-  // 启动时自检数据源，明确告诉用户哪些维度能真正生效
-  useEffect(() => {
-    fetch('/api/scan')
-      .then((r) => r.json())
-      .then(setCap)
-      .catch(() => setCap(null));
-  }, []);
 
   const run = useCallback(async (address: string, opts?: { forceOverview?: boolean }) => {
     setPending(true);
@@ -116,26 +101,10 @@ export default function Home() {
             ◎
           </span>
           <div>
-            <h1 className="text-lg font-bold text-ink-200">Meme Radar</h1>
-            <p className="text-xs text-ink-400">Pump.fun 买入风险体检 · 六维链上风控</p>
+            <h1 className="text-lg font-bold text-ink-200">Meme Killer</h1>
           </div>
         </div>
       </header>
-
-      {/* 数据源能力自检 */}
-      {cap && (
-        <div
-          className={`mb-4 rounded-lg border px-3 py-2 text-xs leading-relaxed ${
-            cap.enhancedApi
-              ? 'border-safe/30 bg-safe/5 text-ink-300'
-              : 'border-warn/40 bg-warn/5 text-warn'
-          }`}
-        >
-          <span className="font-mono">{cap.rpcHost}</span>
-          {cap.enhancedApi && <span className="ml-2 text-safe">· Enhanced API 已启用</span>}
-          <p className="mt-0.5">{cap.note}</p>
-        </div>
-      )}
 
       {/* 输入 */}
       <form
@@ -166,10 +135,6 @@ export default function Home() {
             {pending ? '扫描中…' : '开始体检'}
           </button>
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-ink-400">
-          全部结论来自实时链上与市场数据，无模拟数据。标注「未采集」的维度不参与评分 ——
-          未知不等于安全。
-        </p>
       </form>
 
       {pending && (

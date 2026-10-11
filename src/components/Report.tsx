@@ -115,18 +115,11 @@ function Provenance({ report }: { report: ScanReport }) {
     <div className="rounded-xl border border-ink-700 bg-ink-900/60 p-4">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <span className="text-xs font-semibold text-ink-300">数据来源</span>
-        <span className="font-mono text-xs text-ink-200">{meta.source}</span>
         {!meta.live && (
           <span className="rounded border border-warn/40 bg-warn/10 px-2 py-0.5 text-[11px] text-warn">
             数据源异常 · 结果不完整
           </span>
         )}
-        {meta.elapsedMs !== undefined && (
-          <span className="font-mono text-[11px] text-ink-400">耗时 {meta.elapsedMs}ms</span>
-        )}
-        <span className="ml-auto font-mono text-[11px] text-ink-400">
-          覆盖率 {report.coverage}%
-        </span>
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">

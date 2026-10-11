@@ -1,4 +1,4 @@
-# Meme Radar · Pump.fun 买入风险体检
+# Meme Killer
 
 输入一个 Solana mint 地址，判断这个 meme coin **是否值得买入**、
 以及**有哪些会让你血本无归的机制**。
