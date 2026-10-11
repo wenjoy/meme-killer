@@ -83,3 +83,38 @@ test('持仓相关的内容集中在「持仓」tab，行为相关集中在「�
 test('未知区块返回 undefined 而不是瞎猜一个 tab', () => {
   assert.equal(tabForSection('不存在的区块'), undefined);
 });
+
+/**
+ * 概览与「逐项体检明细」曾经重复显示同一批数字
+ * （概览一份手写的紧凑网格，明细一份完整卡片），实测 Top10 38.22%
+ * 之类同时在两处出现。两份数字将来会各自漂移 —— 改了口径只改一处，
+ * 用户会看到两个互相矛盾的值。所以概览只保留得分。
+ */
+test('【防重复】细节数字只能出现在明细里，概览只给得分', () => {
+  const overview = REPORT_TABS.find((t) => t.key === 'overview')!;
+  const detailTab = tabForSection('逐项体检明细');
+  assert.ok(detailTab, '明细必须有归属');
+
+  // 概览的区块清单里不能出现「速览」这种承载细节数字的区块
+  for (const s of overview.sections) {
+    assert.ok(
+      !s.includes('速览'),
+      `概览不该再有「${s}」—— 细节数字重复会与明细里的值相互矛盾`,
+    );
+  }
+  assert.ok(
+    overview.sections.some((s) => s.includes('得分')),
+    '概览应当只展示各维度得分',
+  );
+  assert.notEqual(detailTab, 'overview', '明细不能放在概览里');
+});
+
+test('【防重复】每个区块全局只能出现一次（分 tab 时最容易复制而不是移动）', () => {
+  const counts = new Map<string, number>();
+  for (const t of REPORT_TABS) {
+    for (const s of t.sections) counts.set(s, (counts.get(s) ?? 0) + 1);
+  }
+  for (const [s, n] of counts) {
+    assert.equal(n, 1, `「${s}」出现了 ${n} 次 —— 分 tab 时应移动而不是复制`);
+  }
+});

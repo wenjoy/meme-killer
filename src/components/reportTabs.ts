@@ -22,7 +22,10 @@ export const REPORT_TABS: ReportTabMeta[] = [
   {
     key: 'overview',
     label: '概览',
-    sections: ['雷达图', '各维度速览'],
+    // ⚠️ 概览**只给各维度得分**，不给细节数字。
+    // 细节（Top10 占比、净流入、卖单额…）统一放在「逐项体检明细」里 ——
+    // 同一批数字出现在两个 tab 会被读成两套结论，改口径时也容易只改一处。
+    sections: ['雷达图', '各维度得分'],
   },
   {
     key: 'holders',

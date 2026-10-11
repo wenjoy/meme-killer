@@ -179,7 +179,12 @@ export interface TabDef {
   label: string;
   /** 右上角的计数徽标（比如「43 项」）；没有就不显示 */
   badge?: string;
-  render: () => React.ReactNode;
+  /**
+   * `switchTab` 让 tab 内部能跳到别的 tab（比如概览里指向「数据来源」的链接）。
+   * 传进来而不是让子组件自己管状态：tab 状态必须只有一份，
+   * 否则「跳转过去」和「点 tab 切过去」会变成两个互不同步的状态。
+   */
+  render: (switchTab: (key: string) => void) => React.ReactNode;
 }
 
 function ReportTabs({ tabs }: { tabs: TabDef[] }) {
@@ -236,7 +241,7 @@ function ReportTabs({ tabs }: { tabs: TabDef[] }) {
           hidden={tab.key !== current?.key}
           className="space-y-4"
         >
-          {tab.render()}
+          {tab.render((key) => setActive(key))}
         </div>
       ))}
     </div>
@@ -344,9 +349,15 @@ export function Report({
           {
             key: T.overview.key,
             label: T.overview.label,
-            render: () => (
+            render: (switchTab) => (
               <>
-          {/* ── 雷达图 + 维度速览 ────────────────────────────────── */}
+              {/* ── 雷达图 + 各维度得分 ──────────────────────────────── */}
+          {/*
+            ⚠️ 这里**只给分数，不给细节数字**。
+            细节（Top10 占比、净流入、卖单额…）统一放在「数据来源」tab 的
+            「逐项体检明细」里 —— 同一批数字出现在两个 tab 会被读成两套结论，
+            而且改口径时容易只改一处。
+          */}
           <section className="grid gap-4 lg:grid-cols-[300px_1fr]">
             <div className="flex flex-col items-center justify-center rounded-xl border border-ink-700 bg-ink-900/60 p-4">
               <RadarChart scores={scores} missing={missing} />
@@ -355,198 +366,62 @@ export function Report({
               </p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               {DIMENSION_ORDER.map((key) => {
                 const d = report.dimensions[key];
                 if (!d) return null;
                 const m = d.metrics ?? {};
+                const noData = m.available === 0;
                 return (
                   <div
                     key={key}
-                    className="flex flex-col justify-between rounded-xl border border-ink-700 bg-ink-900/60 p-3"
+                    className="flex items-center justify-between rounded-xl border border-ink-700 bg-ink-900/60 px-3 py-2"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-ink-400">{d.label}</span>
-                      <span
-                        className="font-mono text-lg font-semibold"
-                        style={{
-                          color: d.metrics?.available === 0 ? 'var(--color-ink-400)' : d.score >= 45 ? 'var(--color-danger)' : d.score >= 25 ? 'var(--color-warn)' : 'var(--color-safe)',
-                        }}
-                      >
-                        {d.metrics?.available === 0 ? '—' : d.score.toFixed(0)}
-                      </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-ink-300">{d.label}</span>
+                      {d.vetoed && (
+                        <span className="rounded bg-danger/20 px-1.5 py-0.5 font-mono text-[9px] text-danger">
+                          否决
+                        </span>
+                      )}
+                      {!d.vetoed && noData && (
+                        <span className="rounded bg-ink-700 px-1.5 py-0.5 font-mono text-[9px] text-ink-400">
+                          无数据
+                        </span>
+                      )}
                     </div>
-                    <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-ink-400">
-                      {key === 'holders' && (
-                        <>
-                          <div className="flex justify-between">
-                            <dt>Top10</dt>
-                            <dd className="text-ink-200">{num(m.top10Pct)}%</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt>剔除项</dt>
-                            <dd className="text-ink-200">{num(m.excludedPct)}%</dd>
-                          </div>
-                          {Number(m.timelockPct) > 0 && (
-                            <div className="flex justify-between">
-                              <dt>锁仓</dt>
-                              <dd className="text-safe">{num(m.timelockPct)}%</dd>
-                            </div>
-                          )}
-                          {Number(m.otherCustodyPct) > 0 && (
-                            <div className="flex justify-between">
-                              <dt>托管</dt>
-                              <dd className="text-warn">{num(m.otherCustodyPct)}%</dd>
-                            </div>
-                          )}
-                        </>
-                      )}
-                      {key === 'liquidity' && (
-                        <>
-                          <div className="flex justify-between">
-                            <dt>阶段</dt>
-                            <dd className="text-ink-200">
-                              {Number(m.graduated) === 1 ? '已毕业(AMM)' : Number(m.graduated) === 0 ? '曲线中' : '—'}
-                            </dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt>curve SOL</dt>
-                            <dd className="text-ink-200">{num(m.realSolReserves)}</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt>净流入 SOL</dt>
-                            <dd className="text-ink-200">{num(m.netInflowSol)}</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt>卖单额</dt>
-                            <dd className="text-ink-200">{num(m.sellSharePct)}%</dd>
-                          </div>
-                          {m.buyTrades !== undefined && (
-                            <div className="flex justify-between">
-                              <dt>买/卖笔数</dt>
-                              <dd className="text-ink-200">
-                                {num(m.buyTrades)} / {num(m.sellTrades)}
-                                {m.sampleWindowMin !== undefined && (
-                                  <span className="ml-1 text-[10px] text-ink-500">
-                                    （样本跨 {num(m.sampleWindowMin)} 分钟）
-                                  </span>
-                                )}
-                              </dd>
-                            </div>
-                          )}
-                          {m.avgBuySol !== undefined && (
-                            <div className="flex justify-between">
-                              <dt>平均单笔 买/卖</dt>
-                              <dd className="text-ink-200" title="单笔成交额均值，用来核对「小额买盘撑笔数、大额卖盘出货」">
-                                {num(m.avgBuySol)} / {num(m.avgSellSol)} SOL
-                              </dd>
-                            </div>
-                          )}
-                          {m.sellMaxSol !== undefined && (
-                            <div className="flex justify-between">
-                              <dt>最大单笔卖单</dt>
-                              <dd className="text-ink-200">{num(m.sellMaxSol)} SOL</dd>
-                            </div>
-                          )}
-                          <div className="flex justify-between">
-                            <dt>持有人</dt>
-                            <dd className="text-ink-200">{num(m.holderCount)}</dd>
-                          </div>
-                        </>
-                      )}
-                      {key === 'developer' && (
-                        <>
-                          {m.creatorSource !== undefined && (
-                            <div className="flex justify-between">
-                              <dt>部署者来源</dt>
-                              <dd className="text-ink-200" title={String(m.creator ?? '')}>
-                                {m.creatorSource === 'curve'
-                                  ? '曲线程序状态'
-                                  : m.creatorSource === 'metadata'
-                                    ? 'metadata creators'
-                                    : '创建交易付款方（推断值）'}
-                              </dd>
-                            </div>
-                          )}
-                          {m.launchWallet !== undefined && (
-                            <div className="flex justify-between">
-                              <dt>创建钱包</dt>
-                              <dd className="font-mono text-warn" title={`与 creator ${String(m.creator ?? '')} 不是同一个地址`}>
-                                {shortAddr(String(m.launchWallet))}
-                              </dd>
-                            </div>
-                          )}
-                          <div className="flex justify-between">
-                            <dt>历史发币</dt>
-                            <dd className="text-ink-200" title="只统计发币数量；这些代币的结局（是否 rug）本工具不回溯，因此不判定">
-                              {num(m.priorTokenCount)} 个
-                            </dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt>dev 卖出</dt>
-                            <dd className="text-ink-200">
-                              {m.devSoldRatio === undefined ? '—' : `${(Number(m.devSoldRatio) * 100).toFixed(0)}%`}
-                            </dd>
-                          </div>
-                        </>
-                      )}
-                      {key === 'contract' && (
-                        <>
-                          <div className="flex justify-between">
-                            <dt>mint 权限</dt>
-                            <dd
-                              className={
-                                Number(m.mintAuthorityRevoked) === 1
-                                  ? 'text-safe'
-                                  : Number(m.mintAuthorityRevoked) === 0
-                                    ? 'text-danger'
-                                    : 'text-ink-400'
-                              }
-                            >
-                              {Number(m.mintAuthorityRevoked) === 1
-                                ? '已弃'
-                                : Number(m.mintAuthorityRevoked) === 0
-                                  ? '未弃'
-                                  : '未知'}
-                            </dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt>转移税</dt>
-                            <dd className="text-ink-200">{num(m.transferFeeBps)}bps</dd>
-                          </div>
-                        </>
-                      )}
-                      {key === 'social' && (
-                        <>
-                          <div className="flex justify-between">
-                            <dt>24h 提及</dt>
-                            <dd className="text-ink-200">{num(m.mentions24h)}</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt>疑似 bot</dt>
-                            <dd className="text-ink-200">{((Number(m.botRatio) || 0) * 100).toFixed(0)}%</dd>
-                          </div>
-                        </>
-                      )}
-                    </dl>
+                    <span
+                      className="font-mono text-xl font-semibold"
+                      style={{
+                        color: noData
+                          ? 'var(--color-ink-400)'
+                          : d.score >= 45
+                            ? 'var(--color-danger)'
+                            : d.score >= 25
+                              ? 'var(--color-warn)'
+                              : 'var(--color-safe)',
+                      }}
+                    >
+                      {noData ? '—' : d.score.toFixed(0)}
+                    </span>
                   </div>
                 );
               })}
             </div>
           </section>
 
-          <CustodySection report={report} />
-          <HoldersOverviewSection report={report} onForceOverview={onForceOverview} forcing={forcing} />
-          <TopHoldersSection report={report} />
-          <AllHoldersSection report={report} />
+          <p className="rounded-lg border border-ink-700 bg-ink-900/40 px-3 py-2 text-[11px] leading-relaxed text-ink-400">
+            每个维度具体依据的数字与发现，见
+            <button
+              type="button"
+              onClick={() => switchTab(T.source.key)}
+              className="mx-1 text-accent underline decoration-dotted hover:text-accent/80"
+            >
+              「数据来源」tab 的逐项体检明细
+            </button>
+            —— 同一个数字只在一处显示，避免两处口径不一致。
+          </p>
 
-          <LargeSellsSection report={report} />
-
-          <DiamondSection report={report} />
-
-          <SellPressureSection report={report} onRunDeep={onRunDeep} deepPending={deepPending} />
-
-          <Provenance report={report} />
               </>
             ),
           },
