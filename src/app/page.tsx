@@ -5,6 +5,8 @@ import { useCallback, useState } from 'react';
 import { useI18n } from '@/i18n';
 
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
+import { WalletButton } from '@/components/WalletButton';
+import { sessionToken, useWalletGate } from '@/components/WalletGate';
 import type { ScanReport } from '@/core/types';
 import { Report } from '@/components/Report';
 
@@ -25,19 +27,33 @@ export default function Home() {
   } | null>(null);
   const [deepError, setDeepError] = useState<string | null>(null);
   const { t } = useI18n();
+  const gate = useWalletGate();
+  // 没签名就不能扫 —— 前端拦一道给即时反馈，服务端还有一道（那才是真的）
+  const canScan = gate.state === 'ready';
 
   const run = useCallback(async (address: string, opts?: { forceOverview?: boolean }) => {
     setPending(true);
     setError(null);
     setReport(null);
     try {
+      const token = sessionToken();
       const res = await fetch('/api/scan', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ mint: address, ...(opts?.forceOverview ? { forceOverview: true } : {}) }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? `请求失败（${res.status}）`);
+      if (!res.ok) {
+        // 429 带上剩余秒数，让用户知道要等多久而不是「出错了」
+        if (res.status === 429) {
+          throw new Error(t('wallet.rateLimited', { sec: json.retryAfterSec ?? 60 }));
+        }
+        if (res.status === 401) throw new Error(t('wallet.required'));
+        throw new Error(json.error ?? `请求失败（${res.status}）`);
+      }
       setReport(json as ScanReport);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -57,13 +73,23 @@ export default function Home() {
       setDeepError(null);
       setDeep({ pct: 0, done: 0, total: 0 });
       try {
+        const token = sessionToken();
         const start = await fetch('/api/deep', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify({ mint: address }),
         });
         const started = await start.json();
-        if (!start.ok) throw new Error(started.error ?? `启动失败（${start.status}）`);
+        if (!start.ok) {
+          if (start.status === 429) {
+            throw new Error(t('wallet.rateLimited', { sec: started.retryAfterSec ?? 300 }));
+          }
+          if (start.status === 401) throw new Error(t('wallet.required'));
+          throw new Error(started.error ?? `启动失败（${start.status}）`);
+        }
         const id: string = started.id;
         setDeep({
           ...(started.progress ?? { pct: 0, done: 0, total: 0 }),
@@ -108,8 +134,9 @@ export default function Home() {
           <div>
             <h1 className="text-lg font-bold text-ink-200">{t('app.name')}</h1>
           </div>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
             <LanguageSwitcher />
+            <WalletButton />
           </div>
         </div>
       </header>
@@ -118,6 +145,8 @@ export default function Home() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          // 没签名不发请求：服务端也会拒，但没必要白跑一趟网络
+          if (!canScan) return;
           if (mint.trim()) void run(mint.trim());
         }}
         className="rounded-xl border border-ink-700 bg-ink-900/60 p-4"
@@ -137,12 +166,28 @@ export default function Home() {
           />
           <button
             type="submit"
-            disabled={pending || !mint.trim()}
+            disabled={pending || !mint.trim() || !canScan}
             className="shrink-0 rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {pending ? t('app.scanning') : t('app.submit')}
           </button>
         </div>
+
+        {/* 未连钱包时的说明：讲清楚「为什么」以及「签名不会花钱」，
+            否则用户看到钱包弹窗会以为要转账，直接关掉页面 */}
+        {!canScan && (
+          <div className="mt-3 rounded-lg border border-amber-800/50 bg-amber-950/30 px-3 py-2">
+            <p className="text-xs font-medium text-amber-300">{t('wallet.needsWallet')}</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-ink-400">{t('wallet.howTo')}</p>
+            <button
+              type="button"
+              onClick={() => void gate.connect()}
+              className="mt-2 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-ink-950 transition-colors hover:bg-amber-400"
+            >
+              {gate.state === 'signing' ? t('wallet.signing') : t('wallet.connect')}
+            </button>
+          </div>
+        )}
       </form>
 
       {pending && (

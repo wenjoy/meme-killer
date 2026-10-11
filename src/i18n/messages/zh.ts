@@ -30,6 +30,19 @@ export const zh = {
       '由链上与公开数据自动生成，不构成投资建议。评分低只代表「未发现明显问题」，不代表安全 —— meme 币归零是常态。',
   },
 
+  wallet: {
+    connect: '连接钱包',
+    sign: '签名以启用',
+    signing: '等待签名…',
+    disconnect: '断开',
+    signFailed: '签名失败',
+    retry: '重试',
+    connecting: '连接中…',
+    needsWallet: '请先连接钱包',
+    howTo: '用网站前需要连接 Solana 钱包并签名。签名不发起交易、不花 gas。',
+    required: '需要连接钱包并签名后才能使用',
+    rateLimited: '请求太频繁，请等待 {sec} 秒',
+  },
   tabs: {
     overview: '概览',
     holders: '持仓',

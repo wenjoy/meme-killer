@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 import { I18nProvider } from '@/i18n';
+import { WalletProvider } from '@/components/WalletProvider';
 
 export const metadata: Metadata = {
   title: 'Meme Killer',
@@ -14,7 +15,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // lang 是初值，I18nProvider 挂载后会按实际语言改写（含 en）
     <html lang="zh-CN">
       <body className="min-h-screen antialiased">
-        <I18nProvider>{children}</I18nProvider>
+        {/* 钱包 Provider 在外层：报告里也要读钱包状态（决定能否扫描/深度分析） */}
+        <WalletProvider>
+          <I18nProvider>{children}</I18nProvider>
+        </WalletProvider>
       </body>
     </html>
   );

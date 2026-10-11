@@ -30,6 +30,20 @@ export const en: Messages = {
       'Generated from on-chain and public data. Not investment advice. A low risk score only means "no obvious problems found" — it does not mean safe. Most meme coins go to zero.',
   },
 
+  wallet: {
+    connect: 'Connect wallet',
+    sign: 'Sign to enable',
+    signing: 'Waiting for signature…',
+    disconnect: 'Disconnect',
+    signFailed: 'Signature failed',
+    retry: 'Retry',
+    connecting: 'Connecting…',
+    needsWallet: 'Connect a wallet first',
+    howTo:
+      'Connect a Solana wallet and sign to use this site. Signing sends no transaction and costs no gas.',
+    required: 'Connect and sign with a wallet to continue',
+    rateLimited: 'Too many requests — wait {sec}s',
+  },
   tabs: {
     overview: 'Overview',
     holders: 'Holders',

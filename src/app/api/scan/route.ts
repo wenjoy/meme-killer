@@ -8,6 +8,7 @@
  */
 import { NextResponse } from 'next/server';
 import { capabilityReport, collectAndScan } from '@/providers';
+import { guard } from '@/server/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,10 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  // 先验钱包签名、再扣限额 —— 两者任一不过都不该消耗 Helius 额度
+  const g = guard(request, 'scan');
+  if (!g.ok) return g.response;
+
   let body: { mint?: unknown; forceOverview?: unknown };
   try {
     body = await request.json();

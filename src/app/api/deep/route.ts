@@ -15,12 +15,17 @@
  */
 import { NextResponse } from 'next/server';
 import { getDeepJob, startDeepJob } from '@/providers/deepJobs';
+import { guard } from '@/server/guard';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
+  // 深度分析单独限额（5 分钟 1 次）：它一次拉 100+ 页，是普通扫描的几十倍
+  const g = guard(request, 'deep');
+  if (!g.ok) return g.response;
+
   let body: { mint?: unknown };
   try {
     body = await request.json();
