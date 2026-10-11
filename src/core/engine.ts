@@ -43,19 +43,23 @@ export function sortFindings(findings: Finding[]): Finding[] {
  * 生成建议仓位。
  * 注意：即使低风险也不建议梭哈 —— meme 币的本质是归零概率极高。
  */
-function positionAdvice(level: string, vetoes: unknown[]): { size: string; text: string } {
+function positionAdvice(
+  level: string,
+  vetoes: unknown[],
+): { size: string; text: string; key: string; params?: Record<string, string | number> } {
+  // `key` 供渲染层翻译；`text` 是过渡期的中文回退（迁完后可删）
   if (vetoes.length > 0) {
-    return { size: '0%', text: '命中硬否决项，任何仓位都不应该开。建议直接放弃这个标的。' };
+    return { size: '0%', key: 'advice.vetoed', text: '命中硬否决项，任何仓位都不应该开。建议直接放弃这个标的。' };
   }
   switch (level) {
     case 'LOW':
-      return { size: '≤ 5%', text: '各维度未发现明显问题，可小仓位参与。仍需设好止损，meme 币归零是常态。' };
+      return { size: '≤ 5%', key: 'advice.low', text: '各维度未发现明显问题，可小仓位参与。仍需设好止损，meme 币归零是常态。' };
     case 'MEDIUM':
-      return { size: '≤ 2%', text: '存在若干风险点，若参与请严格控制仓位，并做好随时离场的准备。' };
+      return { size: '≤ 2%', key: 'advice.medium', text: '存在若干风险点，若参与请严格控制仓位，并做好随时离场的准备。' };
     case 'HIGH':
-      return { size: '0–1%', text: '风险显著高于收益。建议观望，等待风险点消除或项目更成熟。' };
+      return { size: '0–1%', key: 'advice.high', text: '风险显著高于收益。建议观望，等待风险点消除或项目更成熟。' };
     default:
-      return { size: '0%', text: '风险极高，不建议买入。' };
+      return { size: '0%', key: 'advice.critical', text: '风险极高，不建议买入。' };
   }
 }
 
@@ -78,6 +82,8 @@ export function scan(data: ScanInput): ScanReport {
         findings: [
           {
             severity: 'medium',
+            id: 'engine.analyzerFailed',
+            params: { msg: err instanceof Error ? err.message : String(err) },
             title: '分析失败',
             detail: `该维度执行出错：${err instanceof Error ? err.message : String(err)}`,
           },
@@ -121,9 +127,13 @@ export function scan(data: ScanInput): ScanReport {
       label: '数据不足',
       verdict: '无法评估',
       tone: 'warning',
+      labelKey: 'bands.dataInsufficient',
+      verdictKey: 'bands.cannotAssess',
     };
     advice = {
       size: '—',
+      key: 'bands.dataInsufficientAdvice',
+      params: { coverage },
       text: `仅采集到约 ${coverage}% 的评估维度，数据不足以给出买入建议。请检查网络/数据源后重试，并自行到 RugCheck、DexScreener 交叉验证。`,
     };
   }
@@ -207,7 +217,7 @@ export function emptyReport(mint: string, reason: string): ScanReport {
       label: DIMENSION_LABELS[key],
       score: 0,
       vetoed: false,
-      findings: [{ severity: 'medium', title: '数据不足', detail: reason }],
+      findings: [{ severity: 'medium', id: 'engine.noData', title: '数据不足', detail: reason }],
     };
   }
   return {

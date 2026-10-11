@@ -16,8 +16,17 @@ export function analyzeSocial(data: ScanInput): DimensionResult {
   const s = data.social ?? {};
   const t = THRESHOLDS.social;
   const findings: Finding[] = [];
-  const add = (severity: Severity, title: string, detail: string) =>
-    findings.push({ severity, title, detail });
+  /**
+   * 结论只带 id + 参数，文案由渲染层按语言决定。
+   * `title`/`detail` 是过渡期的中文回退，迁完后删除。
+   */
+  const add = (
+    severity: Severity,
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => findings.push({ severity, id, ...(params ? { params } : {}), title: zhTitle, detail: zhDetail });
 
   const mentions = s.mentions24h ?? 0;
   const growth = s.mentionGrowthPct ?? 0;
@@ -28,6 +37,7 @@ export function analyzeSocial(data: ScanInput): DimensionResult {
   if (!hasData) {
     add(
       'medium',
+      'social.noData',
       '社交数据缺失',
       '未能获取社交热度数据。链上无法推算社区质量，此项不计入评分，需要你自行核实项目方的 X / TG。',
     );
@@ -43,47 +53,60 @@ export function analyzeSocial(data: ScanInput): DimensionResult {
 
   // ── 热度水平 ────────────────────────────────────────────────────
   if (mentions === 0) {
-    add('high', '零社交提及', '过去 24 小时未检测到任何社交提及。没有社区的项目很难有接盘深度。');
+    add('high', 'social.zeroMentions', '零社交提及', '过去 24 小时未检测到任何社交提及。没有社区的项目很难有接盘深度。');
   } else if (mentions < t.lowMentionWarn) {
-    add('medium', '社交热度偏低', `24h 仅 ${mentions} 次提及，热度不足。`);
+    add('medium', 'social.lowHype', '社交热度偏低', `24h 仅 ${mentions} 次提及，热度不足。`, { mentions });
   } else {
-    add('good', '社交热度充足', `24h ${mentions} 次提及，环比 ${growth >= 0 ? '+' : ''}${growth}%。`);
+    add('good', 'social.goodHype', '社交热度充足', `24h ${mentions} 次提及，环比 ${growth >= 0 ? '+' : ''}${growth}%。`, {
+      mentions,
+      growth: `${growth >= 0 ? '+' : ''}${growth}`,
+    });
   }
 
   // ── 刷量识别：行为聚类，而非「账号新」───────────────────────────
   if (botRatio >= t.botRatioDanger) {
     add(
       botRatio >= 0.8 ? 'critical' : 'high',
+      'social.suspectedBots',
       '社交热度疑似刷量',
       `约 ${(botRatio * 100).toFixed(0)}% 的提及来自疑似机器人账号` +
         '（同批账号集中出现在多个 meme 下、模板化文案、互动时间分布异常）。',
+      { pct: (botRatio * 100).toFixed(0) },
     );
   } else if (botRatio > 0.35) {
-    add('medium', '社交互动质量存疑', `${(botRatio * 100).toFixed(0)}% 提及来自疑似 bot，真实社区占比需人工确认。`);
+    add('medium', 'social.qualityDoubt', '社交互动质量存疑', `${(botRatio * 100).toFixed(0)}% 提及来自疑似 bot，真实社区占比需人工确认。`, {
+      pct: (botRatio * 100).toFixed(0),
+    });
   }
 
   // 转发远多于回复 —— 典型的买量特征
   if (s.retweetToReplyRatio !== undefined && s.retweetToReplyRatio > 8) {
-    add('medium', '转发远多于回复', `转推/回复比 ${s.retweetToReplyRatio.toFixed(1)}，买量刷屏的常见形态（真实社区以讨论为主）。`);
+    add('medium', 'social.retweetHeavy', '转发远多于回复', `转推/回复比 ${s.retweetToReplyRatio.toFixed(1)}，买量刷屏的常见形态（真实社区以讨论为主）。`, {
+      ratio: s.retweetToReplyRatio.toFixed(1),
+    });
   }
 
   if (s.telegramGrowthSpiky) {
-    add('medium', 'TG 群成员阶跃式增长', '成员数是突增而非平滑增长，符合买粉特征。');
+    add('medium', 'social.tgSpiky', 'TG 群成员阶跃式增长', '成员数是突增而非平滑增长，符合买粉特征。');
   }
 
   if (s.uniqueAuthors !== undefined && mentions > 0) {
     const perAuthor = mentions / Math.max(s.uniqueAuthors, 1);
     if (perAuthor > 12) {
-      add('medium', '提及高度集中在少数账号', `平均每个账号发 ${perAuthor.toFixed(1)} 条，说明是靠少数账号反复刷屏。`);
+      add('medium', 'social.fewAuthors', '提及高度集中在少数账号', `平均每个账号发 ${perAuthor.toFixed(1)} 条，说明是靠少数账号反复刷屏。`, {
+        perAuthor: perAuthor.toFixed(1),
+      });
     }
   }
 
   if (growth < 0 && mentions > 0) {
-    add('medium', '热度正在衰减', `提及量环比 ${growth}%，社区关注度在下降。`);
+    add('medium', 'social.decaying', '热度正在衰减', `提及量环比 ${growth}%，社区关注度在下降。`, { growth });
   }
 
   if (engagementRatio !== undefined && engagementRatio < 0.15 && mentions > t.lowMentionWarn) {
-    add('medium', '互动率偏低', `真实互动仅占 ${(engagementRatio * 100).toFixed(0)}%，热度可能虚高。`);
+    add('medium', 'social.lowEngagement', '互动率偏低', `真实互动仅占 ${(engagementRatio * 100).toFixed(0)}%，热度可能虚高。`, {
+      pct: (engagementRatio * 100).toFixed(0),
+    });
   }
 
   return {

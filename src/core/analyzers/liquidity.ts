@@ -41,12 +41,36 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
   const findings: Finding[] = [];
   let vetoed = false;
 
-  const veto = (title: string, detail: string) => {
+  /**
+   * 结论只带 id + 参数，文案由渲染层按语言决定。
+   * `zhTitle`/`zhDetail` 是过渡期的中文回退，迁完后删除。
+   *
+   * 参数顺序与 social.ts 保持一致：severity, id, 中文回退, params。
+   */
+  const add = (
+    severity: Severity,
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => findings.push({ severity, id, ...(params ? { params } : {}), title: zhTitle, detail: zhDetail });
+  /** 硬否决：同样是 id + params，额外带 `veto: true` */
+  const veto = (
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => {
     vetoed = true;
-    findings.push({ severity: 'critical', title, detail, veto: true });
+    findings.push({
+      severity: 'critical',
+      id,
+      ...(params ? { params } : {}),
+      title: zhTitle,
+      detail: zhDetail,
+      veto: true,
+    });
   };
-  const add = (severity: Severity, title: string, detail: string) =>
-    findings.push({ severity, title, detail });
 
   const buyVolSol = l.buyVolumeSol;
   const sellVolSol = l.sellVolumeSol;
@@ -77,6 +101,7 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
       findings: [
         {
           severity: 'medium',
+          id: 'liquidity.noData',
           title: '流动性数据缺失',
           detail:
             '未能获取池深度、成交量与买卖笔数，无法判断抽池、刷量与蜜罐风险。此项不计入评分，请自行在 DexScreener 上核实。',
@@ -93,6 +118,7 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
   if (l.rugged) {
     add(
       'critical',
+      'liquidity.rugDetected',
       'RugCheck 判定该代币已 rug',
       'RugCheck 依据链上流动性与价格历史已把该代币标记为 rug。此类标的没有讨论仓位的意义。',
     );
@@ -108,20 +134,24 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
   if (!graduated && l.realSolReserves !== undefined && l.realSolReserves < t.minRealSolReserves) {
     add(
       'high',
+      'liquidity.lowCurveReserves',
       'curve 内真实 SOL 极低',
       `仅 ${l.realSolReserves.toFixed(2)} SOL，价格极易被小额资金砸穿，滑点会非常高。`,
+      { sol: l.realSolReserves.toFixed(2) },
     );
   }
 
   if (phaseKnown && !graduated) {
     add(
       'medium',
+      'liquidity.notGraduated',
       '尚未毕业（仍在 bonding curve）',
       `curve 内真实 SOL ${l.realSolReserves !== undefined ? l.realSolReserves.toFixed(2) : '未知'}。` +
         '此阶段没有真实流动性池，只有曲线深度。',
+      { sol: l.realSolReserves !== undefined ? l.realSolReserves.toFixed(2) : '未知' },
     );
   } else if (graduated) {
-    add('good', '已毕业', '已迁移至 AMM，具备真实流动性池。');
+    add('good', 'liquidity.graduated', '已毕业', '已迁移至 AMM，具备真实流动性池。');
   }
 
   // ── 买卖压力（双指标，避免刷量误判）─────────────────────────────
@@ -174,25 +204,37 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
     const oneSided = sellShare < 10 && totalCount > 100 && countShare < 5;
     if (oneSided) {
       veto(
+        'liquidity.honeypot',
         '买入活跃但几乎无法卖出',
         `${totalCount} 笔成交中卖单仅 ${sellCount} 笔（${countShare.toFixed(1)}%）。` +
           '买单一边倒通常不是强势，而是卖出被限制 —— 典型的蜜罐（honeypot）特征。',
+        { totalTrades: totalCount, sellTrades: sellCount, countSharePct: countShare.toFixed(1) },
       );
     } else if (sellShare > t.sellPressureDanger) {
       add(
         sellShare > 75 ? 'critical' : 'high',
+        netInflow !== undefined ? 'liquidity.sellPressureDominant' : 'liquidity.sellPressureDominantNoSol',
         '抛压主导',
         `卖方金额占比 ${sellShare.toFixed(1)}%` +
           (netInflow !== undefined
             ? `，净流入 ${netInflow.toFixed(2)} SOL。`
             : `（金额为 ${volUnit} 口径，无法换算净流入）。`) +
           (sizeEvidence ? sizeEvidence : ''),
+        {
+          sellSharePct: sellShare.toFixed(1),
+          ...(netInflow !== undefined
+            ? { netInflowSol: netInflow.toFixed(2) }
+            : { volumeUnit: volUnit }),
+          ...(sizeEvidence ? { sizeEvidence } : {}),
+        },
       );
     } else if (netInflow !== undefined && netInflow > 0 && countShare >= 5) {
       add(
         'good',
+        'liquidity.balancedInflow',
         '买卖均衡且净流入为正',
         `卖方金额占比 ${sellShare.toFixed(1)}%，净流入 +${netInflow.toFixed(2)} SOL，买盘略强且卖压正常，换手健康。`,
+        { sellSharePct: sellShare.toFixed(1), netInflowSol: netInflow.toFixed(2) },
       );
     }
   }
@@ -205,17 +247,26 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
     if (totalCount > 50 && Math.abs(netInflow) < t.washTradeNetInflowSol && netRatio < t.washTradeNetRatio) {
       add(
         'high',
+        'liquidity.washTrading',
         '疑似刷量',
         `${totalCount} 笔成交、成交额 ${totalVol.toFixed(1)} SOL，净流入仅 ${netInflow.toFixed(3)} SOL` +
           `（占成交额 ${(netRatio * 100).toFixed(1)}%），高笔数几乎零净流入通常是机器人对倒制造热度。`,
+        {
+          totalTrades: totalCount,
+          totalVolSol: totalVol.toFixed(1),
+          netInflowSol: netInflow.toFixed(3),
+          netRatioPct: (netRatio * 100).toFixed(1),
+        },
       );
     }
   } else if (totalCount > 50) {
     add(
       'low',
+      'liquidity.washTradeUnknown',
       '刷量无法判定',
       `拿到了 ${totalCount} 笔成交，但拿不到 SOL 口径的买卖金额（需要 Helius Enhanced API），` +
         '无法用净流入识别对倒刷量，只能看笔数。',
+      { totalTrades: totalCount },
     );
   }
 
@@ -289,17 +340,26 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
     const countRatio = buyCount / sellCount;
     const volRatio = buyVol / Math.max(sellVol, 1e-9);
     if (countRatio > 2 && volRatio < 1) {
+      const ratioBody =
+        `买单笔数是卖单 ${countRatio.toFixed(1)} 倍，但买入金额只有卖出的 ${(volRatio * 100).toFixed(0)}%。` +
+        '小额买盘撑笔数、大额卖盘出货。';
+      // (c)：没有单笔证据、又不是 SOL 口径 → 正文里要补一句单位说明，单独一个 id
+      const unitNote =
+        !sizeEvidence && volUnit !== 'SOL'
+          ? `（金额为 ${volUnit} 口径，拿不到单笔 SOL 量级，无法进一步核对。）`
+          : '';
       add(
         'high',
+        unitNote ? 'liquidity.countVolumeDivergenceNoSol' : 'liquidity.countVolumeDivergence',
         '笔数与金额背离',
-        `买单笔数是卖单 ${countRatio.toFixed(1)} 倍，但买入金额只有卖出的 ${(volRatio * 100).toFixed(0)}%。` +
-          '小额买盘撑笔数、大额卖盘出货。' +
-          (sizeEvidence
-            ? sizeEvidence
-            : volUnit === 'SOL'
-              ? ''
-              : `（金额为 ${volUnit} 口径，拿不到单笔 SOL 量级，无法进一步核对。）`) +
-          sellEvidence,
+        ratioBody + (sizeEvidence || unitNote) + sellEvidence,
+        {
+          countRatio: countRatio.toFixed(1),
+          volRatioPct: (volRatio * 100).toFixed(0),
+          ...(sizeEvidence ? { sizeEvidence } : {}),
+          ...(unitNote ? { volumeUnit: volUnit } : {}),
+          ...(sellEvidence ? { sellEvidence } : {}),
+        },
       );
     }
   }

@@ -72,11 +72,44 @@ export const DIMENSION_ORDER = [
 ] as const;
 
 // ── 风险等级映射 ────────────────────────────────────────────────────
+// label/verdict 是中文兜底，渲染层优先用 labelKey/verdictKey 翻译
 export const RISK_BANDS: RiskBand[] = [
-  { max: 25, level: 'LOW', label: '低风险', verdict: '可考虑小仓买入', tone: 'success' },
-  { max: 45, level: 'MEDIUM', label: '中等风险', verdict: '仅小仓位试探', tone: 'warning' },
-  { max: 65, level: 'HIGH', label: '高风险', verdict: '建议观望', tone: 'warning' },
-  { max: Infinity, level: 'CRITICAL', label: '极高风险', verdict: '不要买入', tone: 'error' },
+  {
+    max: 25,
+    level: 'LOW',
+    label: '低风险',
+    verdict: '可考虑小仓买入',
+    tone: 'success',
+    labelKey: 'bands.low',
+    verdictKey: 'bands.lowVerdict',
+  },
+  {
+    max: 45,
+    level: 'MEDIUM',
+    label: '中等风险',
+    verdict: '仅小仓位试探',
+    tone: 'warning',
+    labelKey: 'bands.medium',
+    verdictKey: 'bands.mediumVerdict',
+  },
+  {
+    max: 65,
+    level: 'HIGH',
+    label: '高风险',
+    verdict: '建议观望',
+    tone: 'warning',
+    labelKey: 'bands.high',
+    verdictKey: 'bands.highVerdict',
+  },
+  {
+    max: Infinity,
+    level: 'CRITICAL',
+    label: '极高风险',
+    verdict: '不要买入',
+    tone: 'error',
+    labelKey: 'bands.critical',
+    verdictKey: 'bands.criticalVerdict',
+  },
 ];
 
 // ── 各维度判定阈值 ──────────────────────────────────────────────────

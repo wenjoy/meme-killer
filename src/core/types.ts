@@ -371,6 +371,23 @@ export interface ScanMeta {
 /** 单条发现项 */
 export interface Finding {
   severity: Severity;
+  /**
+   * 结论的稳定 ID（如 `holders.top10Danger`）。
+   *
+   * 这是国际化的关键：文案不再由分析器决定，而是由渲染层按当前语言查字典。
+   * 用 ID 而不是直接存中文串，还让测试可以断言**语义**而不是措辞
+   * （改一句文案不该让逻辑测试失败）。
+   */
+  id: string;
+  /** 文案参数：数字/字符串，由渲染层按语言插值 */
+  params?: Record<string, string | number>;
+  /**
+   * 中文文案。
+   *
+   * ⚠️ 过渡期保留：部分分析器尚未迁移到 ID 机制。
+   * 渲染层优先用 `id` 查字典，查不到时回退到这里。
+   * 全部迁移完成后这个字段应当删除。
+   */
   title: string;
   detail: string;
   /** 命中硬否决 —— 一票判死 */
@@ -779,6 +796,9 @@ export interface RiskBand {
   label: string;
   verdict: string;
   tone: 'success' | 'warning' | 'error';
+  /** 文案 key（渲染层翻译用）；过渡期与 label/verdict 并存 */
+  labelKey?: string;
+  verdictKey?: string;
 }
 
 export interface ScanReport {
@@ -791,7 +811,13 @@ export interface ScanReport {
   coverage: number;
   vetoes: (Finding & { dimension: string })[];
   dimensions: Record<string, DimensionResult>;
-  advice: { size: string; text: string };
+  advice: {
+    size: string;
+    text: string;
+    /** 文案 key（渲染层翻译用）；过渡期与 text 并存 */
+    key?: string;
+    params?: Record<string, string | number>;
+  };
   /** Markdown 格式的中文报告 */
   summary: string;
   token: TokenInfo;

@@ -398,9 +398,9 @@ test('scoreFromFindings 不让多个中危淹没一个高危', () => {
 
 test('sortFindings 按严重度排序，good 排最后', () => {
   const sorted = sortFindings([
-    { severity: 'good', title: 'g', detail: '' },
-    { severity: 'critical', title: 'c', detail: '' },
-    { severity: 'medium', title: 'm', detail: '' },
+    { severity: 'good', id: 'test.g', title: 'g', detail: '' },
+    { severity: 'critical', id: 'test.c', title: 'c', detail: '' },
+    { severity: 'medium', id: 'test.m', title: 'm', detail: '' },
   ]);
   assert.deepEqual(sorted.map((f) => f.severity), ['critical', 'medium', 'good']);
 });

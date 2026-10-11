@@ -1,4 +1,5 @@
 import type { Severity } from '@/core/types';
+import { useI18n } from '@/i18n';
 
 export const TONE = {
   success: { text: 'text-safe', bg: 'bg-safe/10', border: 'border-safe/30', dot: 'bg-safe' },
@@ -29,6 +30,7 @@ export function riskColor(score: number): string {
 
 /** 分数圆环：一眼看出风险水位 */
 export function ScoreRing({ score, size = 132 }: { score: number; size?: number }) {
+  const { t } = useI18n();
   const stroke = 9;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
@@ -56,18 +58,25 @@ export function ScoreRing({ score, size = 132 }: { score: number; size?: number 
         <span className="text-3xl font-bold leading-none" style={{ color }}>
           {score}
         </span>
-        <span className="mt-1 text-[10px] tracking-wider text-ink-400">风险分</span>
+        <span className="mt-1 text-[10px] tracking-wider text-ink-400">{t('verdict.riskScore')}</span>
       </div>
     </div>
   );
 }
 
-const AXES: { key: string; label: string }[] = [
-  { key: 'contract', label: '合约安全' },
-  { key: 'liquidity', label: '流动性' },
-  { key: 'holders', label: '持币集中' },
-  { key: 'developer', label: '开发者' },
-  { key: 'social', label: '社交热度' },
+/**
+ * 雷达图的轴。
+ *
+ * ⚠️ 这里**只有 key，没有中文 label** —— 名字统一来自字典 `dimensions.<key>`。
+ * 曾经这里自带一份中文 label，结果是英文界面下雷达图仍然显示中文
+ * （别的区块走字典，这里漏了）。少一份文案副本就少一个漂移点。
+ */
+const AXES: { key: string }[] = [
+  { key: 'contract' },
+  { key: 'liquidity' },
+  { key: 'holders' },
+  { key: 'developer' },
+  { key: 'social' },
   // ⚠️ 钻石手权重为 0，不参与总分，但它的分数画进雷达图会**误导**：
   // 这一维高分＝拿得住（抛压小），方向与其它维相反，混在一个「越鼓越危险」的
   // 图里会被读成「钻石手多 = 更危险」。所以刻意不画进来，只在明细区展示。
@@ -89,6 +98,12 @@ export function RadarChart({
   missing: Record<string, boolean>;
   size?: number;
 }) {
+  const { t } = useI18n();
+  // 维度名统一来自字典；缺译文时回退到 key（而不是空白）
+  const dimLabel = (key: string) => {
+    const k = `dimensions.${key}`;
+    return t(k);
+  };
   const cx = size / 2;
   const cy = size / 2;
   const maxR = size / 2 - 42;
@@ -147,7 +162,7 @@ export function RadarChart({
               fontSize={11}
               fill={isMissing ? 'var(--color-ink-400)' : 'var(--color-ink-200)'}
             >
-              {a.label}
+              {dimLabel(a.key)}
             </text>
             <text
               x={lx}

@@ -21,12 +21,33 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   const findings: Finding[] = [];
   let vetoed = false;
 
-  const veto = (title: string, detail: string) => {
+  /**
+   * 结论只带 id + 参数，文案由渲染层按语言决定。
+   * `title`/`detail` 是过渡期的中文回退，迁完后删除。
+   */
+  const veto = (
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => {
     vetoed = true;
-    findings.push({ severity: 'critical', title, detail, veto: true });
+    findings.push({
+      severity: 'critical',
+      id,
+      ...(params ? { params } : {}),
+      title: zhTitle,
+      detail: zhDetail,
+      veto: true,
+    });
   };
-  const add = (severity: Severity, title: string, detail: string) =>
-    findings.push({ severity, title, detail });
+  const add = (
+    severity: Severity,
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => findings.push({ severity, id, ...(params ? { params } : {}), title: zhTitle, detail: zhDetail });
 
   // developer 段为空 = 完全没采集到开发者信息（需索引器）。
   // 此时不能按「priorTokens = []」去算 —— 那会输出「无历史发币记录」这种
@@ -40,6 +61,7 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
       findings: [
         {
           severity: 'medium',
+          id: 'developer.noData',
           title: '开发者数据缺失',
           detail:
             '未采集到部署者信息。历史 rug 记录、dev 卖出比例、关联钱包都需要索引器支持，本次无法判断 —— 请人工核查 creator 地址的历史。',
@@ -58,6 +80,7 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   if (!d.creator) {
     add(
       'medium',
+      'developer.creatorUnknown',
       '部署者身份未知',
       '三级来源（curve 程序状态、metadata、创建交易）都没能确定 creator，' +
         '开发者维度的结论无法归属到任何具体地址。',
@@ -66,19 +89,23 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
     // 只能从付款方推断 = 可能追错人，必须说清楚这是推断值
     add(
       'medium',
+      'developer.creatorInferred',
       '部署者身份为推断值',
       `读不到 pump.fun 曲线或 metadata 里的 creator，只能取创建交易的付款方 \`${d.creator}\`` +
         '作为部署者 —— 用打包器/launchpad 发币时，这个地址是代付手续费的钱包，不是真正的 dev。' +
         '下面的 dev 买卖结论请按此折价看待。',
+      { creator: d.creator },
     );
   } else if (d.launchWallet) {
     // 有权威来源、但创建钱包是另一个地址：这是**披露**，不是风险
     add(
       'low',
+      'developer.launchWalletDiffers',
       '创建钱包与 creator 不是同一个地址',
       `本报告的开发者维度按 creator \`${d.creator}\` 计算，` +
         `而创建交易的付款方是 \`${d.launchWallet}\` —— 付费发币的钱包不一定是 dev` +
         '（打包器 / launchpad 发币、再把 creator 转给真 dev 很常见），两者不要混为一谈。',
+      { creator: d.creator, launchWallet: d.launchWallet },
     );
   }
 
@@ -90,19 +117,32 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   // 判断历史 rug 需要那些代币的价格与流动性历史，本工具只用单次查询，做不到，
   // 所以这里只报「发了几个」，结局一律标为未核实。
   if (priorTokens.length === 0) {
-    add('medium', '无历史发币记录', 'creator 是全新钱包。既没有前科，也没有可验证的成功履历 —— 无法据此加分。');
+    add(
+      'medium',
+      'developer.noPriorTokens',
+      '无历史发币记录',
+      'creator 是全新钱包。既没有前科，也没有可验证的成功履历 —— 无法据此加分。',
+    );
   } else {
     add(
       'low',
+      'developer.priorTokensUnverified',
       '历史发币结局未核实',
       `该 creator 还发行过 ${priorTokens.length} 个代币，但本工具不做价格/流动性历史回溯，` +
         '无法判断其中是否有 rug —— 请人工核对该地址的历史，不要当成「记录干净」。',
+      { count: priorTokens.length },
     );
   }
 
   // 同一 creator 短期批量发币 —— 典型「广撒网」模式
   if ((d.tokensLast7d ?? 0) >= 3) {
-    add('high', '短期内批量发币', `该 creator 近 7 天发行了 ${d.tokensLast7d} 个代币。广撒网式发币通常意味着不打算长期经营。`);
+    add(
+      'high',
+      'developer.bulkLaunch',
+      '短期内批量发币',
+      `该 creator 近 7 天发行了 ${d.tokensLast7d} 个代币。广撒网式发币通常意味着不打算长期经营。`,
+      { count: d.tokensLast7d as number },
+    );
   }
 
   // ── dev sell 检测 ───────────────────────────────────────────────
@@ -122,30 +162,53 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   const exitConfirmed = d.devFullyExited === true;
 
   if (exitConfirmed) {
-    veto('部署者已清仓', 'creator 已卖出全部持仓。项目方都跑光了，没有任何理由留下。');
+    veto('developer.creatorDumped', '部署者已清仓', 'creator 已卖出全部持仓。项目方都跑光了，没有任何理由留下。');
   } else if (d.devFullyExited === false && soldRatio >= t.devSoldRatioDanger) {
     // 已确认「尚未清仓」，但仍在大额减持
     const early = (d.devFirstSellAgeSec ?? Infinity) < t.fastDumpWindowSec;
-    add(
-      early ? 'critical' : 'high',
-      '部署者大额抛售',
-      `已卖出其买入量的 ${(soldRatio * 100).toFixed(0)}%` +
-        (early
-          ? `，且首次卖出发生在发币后 ${Math.round((d.devFirstSellAgeSec ?? 0) / 60)} 分钟，属于快速出货。`
-          : '。'),
-    );
+    // ⚠️ 结尾整句随「是否快速出货」二选一 → 拆 id，而不是拼 params
+    const dumpParams = {
+      soldPct: (soldRatio * 100).toFixed(0),
+      ...(early ? { minutes: Math.round((d.devFirstSellAgeSec ?? 0) / 60) } : {}),
+    };
+    if (early) {
+      add(
+        'critical',
+        'developer.devHeavyDumpFast',
+        '部署者大额抛售',
+        `已卖出其买入量的 ${(soldRatio * 100).toFixed(0)}%` +
+          `，且首次卖出发生在发币后 ${Math.round((d.devFirstSellAgeSec ?? 0) / 60)} 分钟，属于快速出货。`,
+        dumpParams,
+      );
+    } else {
+      add(
+        'high',
+        'developer.devHeavyDump',
+        '部署者大额抛售',
+        `已卖出其买入量的 ${(soldRatio * 100).toFixed(0)}%。`,
+        dumpParams,
+      );
+    }
   } else if (soldRatio > 0) {
     // 流水比例有值但无法确认是否清仓 → 只提示，不升级为否决
     const sold = (soldRatio * 100).toFixed(0);
     add(
       soldRatio >= t.devSoldRatioDanger ? 'high' : soldRatio >= t.devSoldRatioWarn ? 'medium' : 'low',
+      'developer.devSold',
       '部署者有过卖出',
       `按可获取的交易记录，卖出量约占其买入量的 ${sold}%（历史窗口有限，该比例可能失真）。` +
         '注意：部分回收成本在 meme 圈很常见，本身不等于 rug；' +
         '但链上持仓余额未能确认，请自行核对 creator 地址的当前持仓。',
+      { soldPct: sold },
     );
   } else if (d.devHoldingPct !== undefined) {
-    add('good', '部署者未卖出', `creator 仍持有其买入量的 ${d.devHoldingPct.toFixed(1)}%，未见卖出行为。`);
+    add(
+      'good',
+      'developer.devHeld',
+      '部署者未卖出',
+      `creator 仍持有其买入量的 ${d.devHoldingPct.toFixed(1)}%，未见卖出行为。`,
+      { holdingPct: d.devHoldingPct.toFixed(1) },
+    );
   }
 
   // ── 资金来源与关联 ──────────────────────────────────────────────
@@ -156,9 +219,11 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   if ((d.linkedWallets?.length ?? 0) > 0) {
     add(
       'low',
+      'developer.linkedWallet',
       'creator 的首笔资金来自其它钱包',
       `首笔交易的资金来自 ${d.linkedWallets![0]}。这只能说明资金来源，` +
         '无法据此判断是否为中介/混币 —— 请自行核对该钱包的性质。',
+      { wallet: d.linkedWallets![0] },
     );
   }
 

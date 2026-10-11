@@ -39,12 +39,36 @@ export function analyzeContract(data: ScanInput): DimensionResult {
   const findings: Finding[] = [];
   let vetoed = false;
 
-  const veto = (title: string, detail: string) => {
+  /**
+   * 结论只带 id + 参数，文案由渲染层按语言决定。
+   * `zhTitle`/`zhDetail` 是过渡期的中文回退，迁完后删除。
+   *
+   * 参数顺序与 social.ts 保持一致：severity, id, 中文回退, params。
+   */
+  const add = (
+    severity: Severity,
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => findings.push({ severity, id, ...(params ? { params } : {}), title: zhTitle, detail: zhDetail });
+  /** 硬否决：同样是 id + params，额外带 `veto: true` */
+  const veto = (
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => {
     vetoed = true;
-    findings.push({ severity: 'critical', title, detail, veto: true });
+    findings.push({
+      severity: 'critical',
+      id,
+      ...(params ? { params } : {}),
+      title: zhTitle,
+      detail: zhDetail,
+      veto: true,
+    });
   };
-  const add = (severity: Severity, title: string, detail: string) =>
-    findings.push({ severity, title, detail });
 
   // 整个 contract 段缺失：不能当作「检查过了，没问题」。
   // 权限是否为 null、扩展是否存在，在数据缺失时全部不可知 —— 必须标记缺失。
@@ -57,6 +81,7 @@ export function analyzeContract(data: ScanInput): DimensionResult {
       findings: [
         {
           severity: 'medium',
+          id: 'contract.noData',
           title: '合约数据缺失',
           detail: '未能读取 mint 账户，mint/freeze 权限与 Token-2022 扩展是否安全均无法判断。请勿据此认为「没有发现问题」。',
         },
@@ -67,16 +92,26 @@ export function analyzeContract(data: ScanInput): DimensionResult {
 
   // ── mint / freeze authority ──────────────────────────────────────
   if (c.mintAuthority) {
-    veto('铸币权限未放弃', `mintAuthority = ${c.mintAuthority}。项目方可无限增发，稀释你的持仓。`);
+    veto(
+      'contract.mintNotRevoked',
+      '铸币权限未放弃',
+      `mintAuthority = ${c.mintAuthority}。项目方可无限增发，稀释你的持仓。`,
+      { authority: c.mintAuthority },
+    );
   }
   if (c.freezeAuthority) {
-    veto('冻结权限未放弃', `freezeAuthority = ${c.freezeAuthority}。项目方可冻结你的账户，让你无法卖出。`);
+    veto(
+      'contract.freezeNotRevoked',
+      '冻结权限未放弃',
+      `freezeAuthority = ${c.freezeAuthority}。项目方可冻结你的账户，让你无法卖出。`,
+      { authority: c.freezeAuthority },
+    );
   }
   if (c.mintAuthority === null && c.freezeAuthority === null) {
     // 只有**明确读到 null** 才算「已放弃」；undefined 是未知，不能当利好。
-    add('good', '权限已放弃', 'mint 与 freeze authority 均为 null，符合 Pump.fun 正常发币状态。');
+    add('good', 'contract.authoritiesRevoked', '权限已放弃', 'mint 与 freeze authority 均为 null，符合 Pump.fun 正常发币状态。');
   } else if (c.mintAuthority === undefined && c.freezeAuthority === undefined) {
-    add('medium', '权限状态未知', '未能确认 mint/freeze authority 是否已放弃，需人工核实。');
+    add('medium', 'contract.authorityUnknown', '权限状态未知', '未能确认 mint/freeze authority 是否已放弃，需人工核实。');
   }
 
   // ── 代币程序与扩展 ───────────────────────────────────────────────
@@ -99,14 +134,26 @@ export function analyzeContract(data: ScanInput): DimensionResult {
         label: ext,
         why: '未知扩展，需人工复核',
       };
-      if (meta.severity === 'critical') veto(`作恶扩展：${meta.label}`, meta.why);
-      else add(meta.severity, `扩展：${meta.label}`, meta.why);
+      if (meta.severity === 'critical') {
+        veto('contract.maliciousExtension', `作恶扩展：${meta.label}`, meta.why, {
+          extension: ext,
+          label: meta.label,
+          why: meta.why,
+        });
+      } else {
+        add(meta.severity, 'contract.extension', `扩展：${meta.label}`, meta.why, {
+          extension: ext,
+          label: meta.label,
+          why: meta.why,
+        });
+      }
     }
     if (exts.length === 0) {
       // 新版 pump.fun 代币带 metadata_pointer，属正常；完全没有扩展也属正常范围。
       // 这里只作说明，不算风险 —— 用 'good' 语义（中性/无问题）。
       add(
         'good',
+        'contract.token2022Clean',
         'Token-2022 代币，未检出作恶扩展',
         '新版 pump.fun 代币本身就发行在 Token-2022 上，使用该程序不是风险信号。' +
           '关键看扩展：未检出 transferHook / permanentDelegate 等可限制卖出的扩展。',
@@ -119,8 +166,10 @@ export function analyzeContract(data: ScanInput): DimensionResult {
   if (feeBps > THRESHOLDS.contract.maxTransferFeeBps) {
     add(
       feeBps >= 500 ? 'critical' : 'high',
+      'contract.transferFee',
       '存在转移税',
       `卖出税 ${(feeBps / 100).toFixed(2)}%，会显著侵蚀利润。`,
+      { feePct: (feeBps / 100).toFixed(2) },
     );
   }
 
@@ -196,48 +245,115 @@ export function analyzeContract(data: ScanInput): DimensionResult {
     : undefined;
 
   if (lp.exists === false) {
-    add('medium', '尚未建立 LP', '仍在 bonding curve 阶段，没有真实流动性池。');
+    add('medium', 'contract.lpNotCreated', '尚未建立 LP', '仍在 bonding curve 阶段，没有真实流动性池。');
   } else if (lp.burned === true || (lp.burnedPct ?? 0) >= LOCKED_PCT_LP) {
     // ⚠️ 名称纠正：RugCheck 的 `lpLockedPct` 实际是「不在流通中的比例」，
     // 链上核对显示它就是**已销毁**（LP mint 供应量差额）。
-    add(
-      'good',
-      'LP 已销毁',
-      `流动性凭证已永久销毁，无法撤池${lockPct ? `（${lockPct}）` : ''}。` +
-        (auditText ? `${auditText}。` : ''),
-    );
+    if (lockPct) {
+      add(
+        'good',
+        'contract.lpBurned',
+        'LP 已销毁',
+        `流动性凭证已永久销毁，无法撤池（${lockPct}）。` + (auditText ? `${auditText}。` : ''),
+        { lockPct, ...(auditText ? { auditText } : {}) },
+      );
+    } else {
+      add(
+        'good',
+        'contract.lpBurnedNoPct',
+        'LP 已销毁',
+        '流动性凭证已永久销毁，无法撤池。' + (auditText ? `${auditText}。` : ''),
+        auditText ? { auditText } : undefined,
+      );
+    }
   } else if (lp.locked) {
     // ⚠️ 不把「锁定」硬说成「由某锁仓程序托管」：RugCheck 只给比例，
     // 拿不到锁仓方时可能是销毁、也可能是 AMM 自身托管，措辞必须留余地。
-    add(
-      'good',
-      'LP 已锁定/不可撤',
-      (lp.locker
-        ? `由 ${lp.locker} 持有`
-        : lp.unlockAt
-          ? '由锁仓程序持有'
-          : '锁定或销毁比例已达上限，未提供锁仓方') +
-        (lp.unlockAt ? `，锁定至 ${lp.unlockAt.slice(0, 10)}` : '') +
-        `${lockPct ? `（${lockPct}）` : ''}，无法撤池。`,
-    );
+    const lockedSuffix =
+      (lp.unlockAt ? `，锁定至 ${lp.unlockAt.slice(0, 10)}` : '') +
+      `${lockPct ? `（${lockPct}）` : ''}，无法撤池。`;
+    const lockedParams = {
+      ...(lp.unlockAt ? { unlockAt: lp.unlockAt.slice(0, 10) } : {}),
+      ...(lockPct ? { lockPct } : {}),
+    };
+    if (lp.locker) {
+      add(
+        'good',
+        'contract.lpLockedByLocker',
+        'LP 已锁定/不可撤',
+        `由 ${lp.locker} 持有` + lockedSuffix,
+        { locker: lp.locker, ...lockedParams },
+      );
+    } else if (lp.unlockAt) {
+      add(
+        'good',
+        'contract.lpLockedByProgram',
+        'LP 已锁定/不可撤',
+        '由锁仓程序持有' + lockedSuffix,
+        lockedParams,
+      );
+    } else {
+      add(
+        'good',
+        'contract.lpLockedNoLocker',
+        'LP 已锁定/不可撤',
+        '锁定或销毁比例已达上限，未提供锁仓方' + lockedSuffix,
+        lockedParams,
+      );
+    }
   } else if (lp.singleHolder) {
-    veto(
-      'LP 未锁未销毁',
-      `LP 未锁未销毁，且由单一地址 ${lp.holder ?? '未知'} 持有${lockPct ? `（${lockPct}）` : ''}，` +
-        '该地址可随时撤走全部流动性。' +
-        (lpEvidence ? `RugCheck 记录的 LP 持有者：${lpEvidence}。` : ''),
-    );
+    {
+      const holderText = lp.holder ?? '未知';
+      const pctPart = lockPct ? `（${lockPct}）` : '';
+      const evidencePart = lpEvidence ? `RugCheck 记录的 LP 持有者：${lpEvidence}。` : '';
+      // 四个组合各给一个 id —— 文案的句子结构不同，不能靠 params 拼
+      const id = lpEvidence
+        ? lockPct
+          ? 'contract.lpUnlockedSingleHolderWithEvidence'
+          : 'contract.lpUnlockedSingleHolderNoPctWithEvidence'
+        : lockPct
+          ? 'contract.lpUnlockedSingleHolder'
+          : 'contract.lpUnlockedSingleHolderNoPct';
+      veto(
+        id,
+        'LP 未锁未销毁',
+        `LP 未锁未销毁，且由单一地址 ${holderText} 持有${pctPart}，` +
+          '该地址可随时撤走全部流动性。' +
+          evidencePart,
+        {
+          holder: holderText,
+          ...(lockPct ? { lockPct } : {}),
+          ...(lpEvidence ? { lpEvidence } : {}),
+        },
+      );
+    }
   } else {
     // ── 未达「已销毁/已锁定」的整体判定 ──────────────────────────
     // 先如实报出已经销毁的那部分（实测很常见：pump.fun 迁移销毁的只是迁移时那笔，
     // 之后第三方添加流动性又会铸出新的 LP），再处置仍在流通的部分。
     if ((lp.burnedPct ?? 0) > 0) {
-      add(
-        (lp.burnedPct ?? 0) >= 50 ? 'good' : 'low',
-        `LP 已销毁 ${(lp.burnedPct ?? 0).toFixed(1)}%`,
-        `${auditText}；即 ${(lp.burnedPct ?? 0).toFixed(1)}% 的 LP 已销毁，` +
-          `其余 ${(livePct ?? 0).toFixed(1)}% 仍在流通。`,
-      );
+      const burnedPctText = (lp.burnedPct ?? 0).toFixed(1);
+      const livePctText = (livePct ?? 0).toFixed(1);
+      if (auditText) {
+        add(
+          (lp.burnedPct ?? 0) >= 50 ? 'good' : 'low',
+          'contract.lpPartiallyBurned',
+          `LP 已销毁 ${burnedPctText}%`,
+          `${auditText}；即 ${burnedPctText}% 的 LP 已销毁，` +
+            `其余 ${livePctText}% 仍在流通。`,
+          { burnedPct: burnedPctText, livePct: livePctText, auditText },
+        );
+      } else {
+        add(
+          (lp.burnedPct ?? 0) >= 50 ? 'good' : 'low',
+          'contract.lpPartiallyBurnedNoAudit',
+          `LP 已销毁 ${burnedPctText}%`,
+          // ⚠️ 前导分号是旧行为的原样保留：模板是 `${auditText}；即 …`，
+          // auditText 为空时 detail 就以「；」开头。迁移不改文案，故照旧。
+          `；即 ${burnedPctText}% 的 LP 已销毁，` + `其余 ${livePctText}% 仍在流通。`,
+          { burnedPct: burnedPctText, livePct: livePctText },
+        );
+      }
     }
     // ⚠️ 门槛卡在**占全池 LP 的比例**上，不是占流通量的比例：
     // 真正能撤走的是池子深度的那一份。用「占流通量」当门槛时，
@@ -245,117 +361,210 @@ export function analyzeContract(data: ScanInput): DimensionResult {
     // 而它实际只能抽走池子的 3% —— 那是把小数放大成警报。
     if (relatedOfPool !== undefined && relatedOfPool >= 5) {
       // 关联钱包（付款方 / 给 creator 出资的钱包）持有 LP —— 这是真实的撤池敞口
-      add(
-        relatedOfPool >= 50 ? 'high' : 'medium',
-        '与部署者关联的钱包持有流通中的 LP',
-        `链上核对：与部署者关联的地址（创建交易的付款方、或给 creator 首笔交易出资的钱包）` +
-          `持有全池 LP 的约 ${relatedOfPool.toFixed(1)}%` +
-          (relatedOfLive !== undefined ? `（占仍在流通部分的 ${relatedOfLive.toFixed(1)}%）` : '') +
+      {
+        const ofPoolText = relatedOfPool.toFixed(1);
+        const liveText = relatedOfLive !== undefined ? relatedOfLive.toFixed(1) : undefined;
+        const head =
+          '链上核对：与部署者关联的地址（创建交易的付款方、或给 creator 首笔交易出资的钱包）' +
+          `持有全池 LP 的约 ${ofPoolText}%` +
+          (liveText !== undefined ? `（占仍在流通部分的 ${liveText}%）` : '') +
           `，涉及 ${relatedHolders.length} 个地址 —— 这些地址可以随时提走对应份额的流动性。` +
-          '除非能证明它与项目方无关（例如是公开的做市商），否则应按项目方撤池风险看待。' +
-          (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''),
-      );
+          '除非能证明它与项目方无关（例如是公开的做市商），否则应按项目方撤池风险看待。';
+        const id = lpEvidence
+          ? liveText !== undefined
+            ? 'contract.relatedHoldsLpWithEvidence'
+            : 'contract.relatedHoldsLpNoLiveWithEvidence'
+          : liveText !== undefined
+            ? 'contract.relatedHoldsLp'
+            : 'contract.relatedHoldsLpNoLive';
+        add(relatedOfPool >= 50 ? 'high' : 'medium', id, '与部署者关联的钱包持有流通中的 LP', head + (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''), {
+          ofPoolPct: ofPoolText,
+          ...(liveText !== undefined ? { livePct: liveText } : {}),
+          holderCount: relatedHolders.length,
+          ...(lpEvidence ? { lpEvidence } : {}),
+        });
+      }
     }
     if ((lp.creatorLpPct ?? 0) >= 5) {
       // 只有项目方自己持有的流通 LP 才是撤池跑路的直接风险
       const ofPool = livePct !== undefined ? ((lp.creatorLpPct ?? 0) / 100) * livePct : undefined;
-      add(
-        'high',
-        '项目方持有流通中的 LP',
-        `链上核对：creator 地址持有流通 LP 的约 ${(lp.creatorLpPct ?? 0).toFixed(1)}%` +
-          (ofPool !== undefined ? `（相当于全池 LP 的 ${ofPool.toFixed(1)}%）` : '') +
-          '，可以随时撤走对应份额的流动性。' +
-          (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''),
-      );
+      {
+        const creatorText = (lp.creatorLpPct ?? 0).toFixed(1);
+        const ofPoolText = ofPool !== undefined ? ofPool.toFixed(1) : undefined;
+        const body =
+          `链上核对：creator 地址持有流通 LP 的约 ${creatorText}%` +
+          (ofPoolText !== undefined ? `（相当于全池 LP 的 ${ofPoolText}%）` : '') +
+          '，可以随时撤走对应份额的流动性。';
+        const id = lpEvidence
+          ? ofPoolText !== undefined
+            ? 'contract.creatorHoldsLpWithEvidence'
+            : 'contract.creatorHoldsLpNoPoolWithEvidence'
+          : ofPoolText !== undefined
+            ? 'contract.creatorHoldsLp'
+            : 'contract.creatorHoldsLpNoPool';
+        add('high', id, '项目方持有流通中的 LP', body + (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''), {
+          creatorPct: creatorText,
+          ...(ofPoolText !== undefined ? { ofPoolPct: ofPoolText } : {}),
+          ...(lpEvidence ? { lpEvidence } : {}),
+        });
+      }
     } else if ((lp.lockerPct ?? 0) > 0 && (lp.withdrawablePct ?? 0) < THRESHOLDS.contract.lpWithdrawableDangerPct) {
       // 流通部分主要在锁仓/线性解锁合约里（实测 AVKpeeWa…、BdzaE3T7… 都是 Streamflow）。
       // ⚠️ 标题不能说「LP 未销毁」：上面那条可能已经报出「已销毁 68.3%」，
       // 这里说的是**仍在流通的那部分**的去向。
-      add(
-        'medium',
-        '流通中的 LP 主要在锁仓程序里',
-        `RugCheck 实测${lockPct ? `：${lockPct}` : ''}` +
-          `；链上核对到 ${(lp.lockerPct ?? 0).toFixed(1)}% 的 LP 由锁仓/线性解锁合约持有，` +
-          `普通钱包可随时提走的仅约 ${(lp.withdrawablePct ?? 0).toFixed(2)}%。` +
+      {
+        const lockerPctText = (lp.lockerPct ?? 0).toFixed(1);
+        const withdrawableText = (lp.withdrawablePct ?? 0).toFixed(2);
+        const tail =
           (lpEvidence ? `LP 持有者：${lpEvidence}。` : '') +
           accountGapNote +
-          '⚠️ 锁仓会按计划逐步解锁，解锁后即可提走 —— 请留意解锁时间，别把它当成永久锁定。',
-      );
+          '⚠️ 锁仓会按计划逐步解锁，解锁后即可提走 —— 请留意解锁时间，别把它当成永久锁定。';
+        add(
+          'medium',
+          lockPct ? 'contract.lpInLocker' : 'contract.lpInLockerNoPct',
+          '流通中的 LP 主要在锁仓程序里',
+          `RugCheck 实测${lockPct ? `：${lockPct}` : ''}` +
+            `；链上核对到 ${lockerPctText}% 的 LP 由锁仓/线性解锁合约持有，` +
+            `普通钱包可随时提走的仅约 ${withdrawableText}%。` +
+            tail,
+          {
+            ...(lockPct ? { lockPct } : {}),
+            lockerPct: lockerPctText,
+            withdrawablePct: withdrawableText,
+            ...(lpEvidence ? { lpEvidence } : {}),
+            ...(accountGapNote ? { accountGapNote } : {}),
+          },
+        );
+      }
     } else if ((lp.topCirculatingHolderPct ?? 0) >= 50) {
-      add(
-        'medium',
-        '流通中的 LP 集中在一个地址',
-        `链上核对：流通中的 LP 有约 ${(lp.topCirculatingHolderPct ?? 0).toFixed(1)}% 由单一地址持有` +
-          (livePct !== undefined
-            ? `（相当于全池 LP 的 ${(((lp.topCirculatingHolderPct ?? 0) / 100) * livePct).toFixed(1)}%）`
-            : '') +
-          '，该地址撤走时池子流动性会同步减少这么多。' +
-          (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''),
-      );
+      {
+        const topText = (lp.topCirculatingHolderPct ?? 0).toFixed(1);
+        const ofPoolText =
+          livePct !== undefined
+            ? (((lp.topCirculatingHolderPct ?? 0) / 100) * livePct).toFixed(1)
+            : undefined;
+        const body =
+          `链上核对：流通中的 LP 有约 ${topText}% 由单一地址持有` +
+          (ofPoolText !== undefined ? `（相当于全池 LP 的 ${ofPoolText}%）` : '') +
+          '，该地址撤走时池子流动性会同步减少这么多。';
+        const id = lpEvidence
+          ? ofPoolText !== undefined
+            ? 'contract.lpConcentratedWithEvidence'
+            : 'contract.lpConcentratedNoPoolWithEvidence'
+          : ofPoolText !== undefined
+            ? 'contract.lpConcentrated'
+            : 'contract.lpConcentratedNoPool';
+        add('medium', id, '流通中的 LP 集中在一个地址', body + (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''), {
+          topPct: topText,
+          ...(ofPoolText !== undefined ? { ofPoolPct: ofPoolText } : {}),
+          ...(lpEvidence ? { lpEvidence } : {}),
+        });
+      }
     } else if ((lp.circulatingHolderCount ?? 0) >= 3) {
-      add(
-        'low',
-        '流通中的 LP 分散在多个地址',
-        (livePct !== undefined ? `约 ${livePct.toFixed(1)}% 的 LP 仍在流通，` : '') +
-          `由 ${lp.circulatingHolderCount} 个地址分散持有（最大一个占流通量的 ${(lp.topCirculatingHolderPct ?? 0).toFixed(1)}%）` +
-          (relatedHolders.length > 0
+      {
+        const liveText = livePct !== undefined ? livePct.toFixed(1) : undefined;
+        const topText = (lp.topCirculatingHolderPct ?? 0).toFixed(1);
+        const hasRelated = relatedHolders.length > 0;
+        const head =
+          (liveText !== undefined ? `约 ${liveText}% 的 LP 仍在流通，` : '') +
+          `由 ${lp.circulatingHolderCount} 个地址分散持有（最大一个占流通量的 ${topText}%）` +
+          (hasRelated
             ? `，其中 ${relatedHolders.length} 个是与部署者关联的地址（见上一条，不能算作第三方流动性）`
             : '') +
-          '。' +
-          (relatedHolders.length > 0
-            ? '除关联地址那一份之外，其余是各自添加流动性的持有人，撤走自己那份属于正常的 AMM 行为' +
-              '（关联地址的部分见上一条，不能一并算作「第三方流动性」）—— '
-            : '这些是各自添加流动性的持有人，撤走自己那份属于正常的 AMM 行为，不构成项目方撤池跑路 —— ') +
-          '但无论如何，提走 LP 都会让池子深度同步下降。' +
-          (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''),
-      );
+          '。';
+        const body = hasRelated
+          ? '除关联地址那一份之外，其余是各自添加流动性的持有人，撤走自己那份属于正常的 AMM 行为' +
+            '（关联地址的部分见上一条，不能一并算作「第三方流动性」）—— '
+          : '这些是各自添加流动性的持有人，撤走自己那份属于正常的 AMM 行为，不构成项目方撤池跑路 —— ';
+        const id = hasRelated
+          ? liveText !== undefined
+            ? 'contract.lpDistributedWithRelated'
+            : 'contract.lpDistributedNoLiveWithRelated'
+          : liveText !== undefined
+            ? 'contract.lpDistributed'
+            : 'contract.lpDistributedNoLive';
+        add('low', id, '流通中的 LP 分散在多个地址', head + body + '但无论如何，提走 LP 都会让池子深度同步下降。' + (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''), {
+          ...(liveText !== undefined ? { livePct: liveText } : {}),
+          holderCount: lp.circulatingHolderCount ?? 0,
+          topPct: topText,
+          ...(hasRelated ? { relatedCount: relatedHolders.length } : {}),
+          ...(lpEvidence ? { lpEvidence } : {}),
+        });
+      }
     } else if (
       (lp.circulatingHolderCount ?? 0) >= 1 &&
       (lp.withdrawablePct ?? 0) >= THRESHOLDS.contract.lpWithdrawableDangerPct
     ) {
       // 流通 LP 只落在极少数普通钱包里（1–2 个），且占比不小：不是「分散的第三方流动性」
-      add(
-        'medium',
-        '流通中的 LP 由少数地址持有',
-        `链上核对：${(lp.withdrawablePct ?? 0).toFixed(1)}% 的 LP 由 ${lp.circulatingHolderCount} 个普通钱包持有` +
-          (lp.topCirculatingHolderPct !== undefined
-            ? `（最大一个占流通量的 ${lp.topCirculatingHolderPct.toFixed(1)}%）`
-            : '') +
-          '，这些地址可以随时提走对应份额的流动性。' +
-          (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''),
-      );
+      {
+        const withdrawableText = (lp.withdrawablePct ?? 0).toFixed(1);
+        const topText =
+          lp.topCirculatingHolderPct !== undefined ? lp.topCirculatingHolderPct.toFixed(1) : undefined;
+        const body =
+          `链上核对：${withdrawableText}% 的 LP 由 ${lp.circulatingHolderCount} 个普通钱包持有` +
+          (topText !== undefined ? `（最大一个占流通量的 ${topText}%）` : '') +
+          '，这些地址可以随时提走对应份额的流动性。';
+        const id = lpEvidence
+          ? topText !== undefined
+            ? 'contract.lpFewWalletsWithEvidence'
+            : 'contract.lpFewWalletsNoTopWithEvidence'
+          : topText !== undefined
+            ? 'contract.lpFewWallets'
+            : 'contract.lpFewWalletsNoTop';
+        add('medium', id, '流通中的 LP 由少数地址持有', body + (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''), {
+          withdrawablePct: withdrawableText,
+          holderCount: lp.circulatingHolderCount ?? 0,
+          ...(topText !== undefined ? { topPct: topText } : {}),
+          ...(lpEvidence ? { lpEvidence } : {}),
+        });
+      }
     } else if ((lp.withdrawablePct ?? 0) >= THRESHOLDS.contract.lpWithdrawableDangerPct) {
-      add(
-        'high',
-        'LP 未锁定也未销毁',
-        `RugCheck 实测${lockPct ? `：${lockPct}` : ''}` +
-          `；链上核对到其中 ${(lp.withdrawablePct ?? 0).toFixed(1)}% 的 LP 由普通钱包持有，` +
-          '这些地址可以随时提走对应流动性。' +
-          accountGapNote +
-          (lpEvidence
-            ? `RugCheck 记录的 LP 持有者：${lpEvidence} —— 请按此核对可撤部分在谁手里。`
-            : '⚠️ 没有持有者明细时不要默认是项目方。'),
-      );
+      {
+        const withdrawableText = (lp.withdrawablePct ?? 0).toFixed(1);
+        add(
+          'high',
+          lpEvidence ? 'contract.lpUnlockedWithEvidence' : 'contract.lpUnlockedNoEvidence',
+          'LP 未锁定也未销毁',
+          `RugCheck 实测${lockPct ? `：${lockPct}` : ''}` +
+            `；链上核对到其中 ${withdrawableText}% 的 LP 由普通钱包持有，` +
+            '这些地址可以随时提走对应流动性。' +
+            accountGapNote +
+            (lpEvidence
+              ? `RugCheck 记录的 LP 持有者：${lpEvidence} —— 请按此核对可撤部分在谁手里。`
+              : '⚠️ 没有持有者明细时不要默认是项目方。'),
+          {
+            ...(lockPct ? { lockPct } : {}),
+            withdrawablePct: withdrawableText,
+            ...(accountGapNote ? { accountGapNote } : {}),
+            ...(lpEvidence ? { lpEvidence } : {}),
+          },
+        );
+      }
     } else if (lp.locked === false || lp.burned === false || lp.burnedPct !== undefined) {
       // 有比例、没有持有者明细：能说清「有多少不在流通中」，说不清「谁拿着剩下的」。
       // 既不能算撤池风险（可能是第三方或锁仓），也不能算已锁定 —— 只能如实标注未知。
       add(
         'medium',
+        lockPct ? 'contract.lpHoldersUnverifiable' : 'contract.lpHoldersUnverifiableNoPct',
         '流通中的 LP 持有人无法核实',
         `RugCheck 口径${lockPct ? `：${lockPct}` : ''}（链上核对显示这个比例就是已不在流通中的 LP），` +
           '但本次没拿到 LP 持有者明细，无法确认剩余流通部分在谁手里 —— ' +
           '既不能据此判定撤池风险，也不能当成已锁定。' +
           (lp.lpMint ? `LP mint：${lp.lpMint}。` : ''),
+        {
+          ...(lockPct ? { lockPct } : {}),
+          ...(lp.lpMint ? { lpMint: lp.lpMint } : {}),
+        },
       );
     } else if (lp.exists === true) {
       // 确认存在 LP，但锁仓状态查不到 —— 这是风险，不是安全
-      add('high', 'LP 锁定状态未知', '已确认存在流动性池，但未能核实 LP 已锁或已销毁，存在撤池风险。');
+      add('high', 'contract.lpLockUnknown', 'LP 锁定状态未知', '已确认存在流动性池，但未能核实 LP 已锁或已销毁，存在撤池风险。');
     }
   }
   // lp 完全为空：不在此处下结论，避免把「没数据」误判成「有风险」
 
   if (c.isMutableMetadata) {
-    add('low', 'Metadata 可变', '项目方可修改名称/图标，常见但可被用于伪装。');
+    add('low', 'contract.mutableMetadata', 'Metadata 可变', '项目方可修改名称/图标，常见但可被用于伪装。');
   }
 
   return {

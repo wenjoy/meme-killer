@@ -1,6 +1,10 @@
 'use client';
 
 import { useCallback, useState } from 'react';
+
+import { useI18n } from '@/i18n';
+
+import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import type { ScanReport } from '@/core/types';
 import { Report } from '@/components/Report';
 
@@ -20,6 +24,7 @@ export default function Home() {
     state?: string;
   } | null>(null);
   const [deepError, setDeepError] = useState<string | null>(null);
+  const { t } = useI18n();
 
   const run = useCallback(async (address: string, opts?: { forceOverview?: boolean }) => {
     setPending(true);
@@ -101,7 +106,10 @@ export default function Home() {
             ◎
           </span>
           <div>
-            <h1 className="text-lg font-bold text-ink-200">Meme Killer</h1>
+            <h1 className="text-lg font-bold text-ink-200">{t('app.name')}</h1>
+          </div>
+          <div className="ml-auto">
+            <LanguageSwitcher />
           </div>
         </div>
       </header>
@@ -115,14 +123,14 @@ export default function Home() {
         className="rounded-xl border border-ink-700 bg-ink-900/60 p-4"
       >
         <label htmlFor="mint" className="mb-2 block text-xs text-ink-400">
-          输入 Solana mint 地址
+          {t('app.inputLabel')}
         </label>
         <div className="flex flex-col gap-2 sm:flex-row">
           <input
             id="mint"
             value={mint}
             onChange={(e) => setMint(e.target.value)}
-            placeholder="粘贴 mint 地址，例如 EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            placeholder={t('app.inputPlaceholder')}
             spellCheck={false}
             autoComplete="off"
             className="min-w-0 flex-1 rounded-lg border border-ink-600 bg-ink-950 px-3 py-2.5 font-mono text-sm text-ink-200 outline-none transition placeholder:text-ink-600 focus:border-accent/60 focus:ring-2 focus:ring-accent/20"
@@ -132,7 +140,7 @@ export default function Home() {
             disabled={pending || !mint.trim()}
             className="shrink-0 rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {pending ? '扫描中…' : '开始体检'}
+            {pending ? t('app.scanning') : t('app.submit')}
           </button>
         </div>
       </form>
@@ -141,17 +149,17 @@ export default function Home() {
         <div className="relative mt-6 overflow-hidden rounded-xl border border-ink-700 bg-ink-900/60 px-4 py-3">
           <div className="scanning-sweep absolute inset-0" />
           <p className="relative text-sm text-ink-300">
-            正在采集链上数据…
+            {t('app.scanning')}
           </p>
         </div>
       )}
 
       {error && (
         <div className="mt-6 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3">
-          <p className="text-sm font-medium text-danger">扫描失败</p>
+          <p className="text-sm font-medium text-danger">{t('app.scanFailed')}</p>
           <p className="mt-1 text-xs leading-relaxed text-ink-300">{error}</p>
           <p className="mt-2 text-[11px] text-ink-400">
-            请稍后重试。若持续失败，可能是数据源暂时不可用。
+            {t('app.scanFailedHint')}
           </p>
         </div>
       )}
@@ -162,33 +170,33 @@ export default function Home() {
             <>
               <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
                 <span className="text-ink-200">
-                  已排队 —— 前面有 {Math.max(0, (deep.queuePosition ?? 1) - 1)} 个深度任务在跑
+                  {t('app.deepQueued', { n: Math.max(0, (deep.queuePosition ?? 1) - 1) })}
                 </span>
                 {deep.etaSec !== undefined && (
                   <span className="font-mono text-ink-300">
-                    预计等待约 {Math.max(1, Math.ceil(deep.etaSec / 60))} 分钟
+                    {t('app.deepEta', { min: Math.max(1, Math.ceil(deep.etaSec / 60)) })}
                   </span>
                 )}
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-400">
-                一次只跑一个深度任务，避免触发数据源限流导致结果不完整。可以离开这一页。
+                {t('app.deepQueuedNote')}
               </p>
             </>
           ) : (
             <>
               <div className="flex items-baseline justify-between text-xs">
                 <span className="text-ink-200">
-                  深度分析进行中 —— 逐地址拉取完整历史，算出真实成本（不是窗口估算）
+                  {t('app.deepRunning')}
                 </span>
                 <span className="font-mono text-ink-300">
-                  {deep.pct}%（{deep.done}/{deep.total}）
+                  {t('app.deepProgress', { pct: deep.pct, done: deep.done, total: deep.total })}
                 </span>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded bg-ink-800">
                 <div className="h-full bg-accent transition-all" style={{ width: `${deep.pct}%` }} />
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-400">
-                前 50 名持有人约需 <span className="text-ink-300">2 分钟</span>，完成后自动重新生成报告。
+                {t('app.deepRunningNote')}
               </p>
             </>
           )}
@@ -197,7 +205,7 @@ export default function Home() {
 
       {deepError && (
         <div className="mt-4 rounded-xl border border-danger/40 bg-danger/5 px-4 py-3 text-xs text-ink-300">
-          深度分析失败：{deepError}
+          {t('app.deepFailed', { msg: deepError })}
         </div>
       )}
 

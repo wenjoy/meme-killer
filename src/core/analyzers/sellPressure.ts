@@ -156,13 +156,23 @@ export function mergeTradeSources(
 export function analyzeSellPressure(data: ScanInput): DimensionResult {
   const t = THRESHOLDS.sellPressure;
   const findings: Finding[] = [];
-  const add = (severity: Severity, title: string, detail: string) =>
-    findings.push({ severity, title, detail });
+  /**
+   * 结论只带 id + 参数，文案由渲染层按语言决定。
+   * `title`/`detail` 是过渡期的中文回退，迁完后删除。
+   */
+  const add = (
+    severity: Severity,
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => findings.push({ severity, id, ...(params ? { params } : {}), title: zhTitle, detail: zhDetail });
 
   const sp = data.sellPressure;
   if (!sp || sp.trades.length === 0) {
     add(
       'medium',
+      'sellPressure.noData',
       '抛压分布无法计算',
       '没有取到可配对的逐笔成交（需要同时拿到某地址的 SOL 净变化与它的代币净变化），' +
         '因此算不出持仓成本。这不是「没有抛压」，是这一项没数据。',
@@ -281,39 +291,87 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
   if (attributionPct !== undefined && attributionPct < t.minAttributionPct) {
     add(
       'medium',
+      'sellPressure.lowAttribution',
       `只有 ${attributionPct.toFixed(0)}% 的成交能配对出成本`,
       `窗口内 ${sp.trades.length} 笔成交里只有 ${paired} 笔能同时拿到 SOL 与代币的净变化，` +
         '其余交易的代币变动记在别的账户上（中转/聚合器），无法归因到具体买家。' +
         '因此下面的分布**只覆盖一小部分筹码**，不能当作全貌。',
+      { attributionPct: attributionPct.toFixed(0), windowTrades: sp.trades.length, paired },
     );
   }
 
   if (priceStale) {
-    add(
-      'medium',
-      '隐含现价不可靠，盈亏一栏已停用',
-      price === undefined
-        ? '窗口内没有可反推价格的成交。'
-        : `窗口内最近一笔成交距现在 ${Math.round(Math.abs(priceAgeSec ?? 0) / 3600)} 小时，` +
+    // 「算不出价格」与「价格太旧」是两种完全不同的说明 → 拆 id
+    if (price === undefined) {
+      add('medium', 'sellPressure.priceUnavailable', '隐含现价不可靠，盈亏一栏已停用', '窗口内没有可反推价格的成交。');
+    } else {
+      add(
+        'medium',
+        'sellPressure.priceTooOld',
+        '隐含现价不可靠，盈亏一栏已停用',
+        `窗口内最近一笔成交距现在 ${Math.round(Math.abs(priceAgeSec ?? 0) / 3600)} 小时，` +
           `超过 ${Math.round(t.maxPriceAgeSec / 3600)} 小时的时效上限，那个价格已不能代表现价。`,
-    );
+        {
+          ageHours: Math.round(Math.abs(priceAgeSec ?? 0) / 3600),
+          maxAgeHours: Math.round(t.maxPriceAgeSec / 3600),
+        },
+      );
+    }
   } else if (rows.length > 0) {
     const biggest = [...rows].sort((a, b) => b.unsoldTokens * (b.pnlPct > 0 ? 1 : 0) - a.unsoldTokens * (a.pnlPct > 0 ? 1 : 0))[0];
     const backToEven = buckets.find((b) => b.label.includes('回本区'));
-    add(
-      'low',
-      `未卖筹码 ${unsoldPctOfCirculating.toFixed(1)}% 流通盘（可分析部分）`,
-      `${rows.length} 个钱包的未卖筹码按成本折算共 ${totalCostSol.toFixed(2)} SOL；` +
-        `其中 ${inProfit.length} 个处于浮盈。` +
-        (backToEven && backToEven.wallets > 0
-          ? `回本区（-10%~+10%）里有 ${backToEven.wallets} 个钱包、合计 ${backToEven.pctOfCirculating.toFixed(2)}% 流通盘 —— ` +
-            '这个区间最容易触发卖出。'
-          : '') +
-        (biggest && biggest.pnlPct > 100
-          ? `浮盈最大且仍有筹码的是 ${biggest.address.slice(0, 8)}…（+${biggest.pnlPct.toFixed(0)}%，还有 ${biggest.unsoldTokens.toFixed(0)} 枚没卖）。`
-          : '') +
-        '⚠️ 这是**窗口内能配对出来的那部分**筹码，不是全部持仓。',
-    );
+    // ⚠️ 尾部有两段独立的可选句子（回本区 / 浮盈最大）。按规则只拆最关键的
+    // 「回本区有货」这一处（它带明确的行为结论），「浮盈最大」保持拼接。
+    const hasBackToEven = !!(backToEven && backToEven.wallets > 0);
+    const hasBiggest = !!(biggest && biggest.pnlPct > 100);
+    const unsoldParams = {
+      unsoldPctOfCirculating: unsoldPctOfCirculating.toFixed(1),
+      walletCount: rows.length,
+      totalCostSol: totalCostSol.toFixed(2),
+      inProfitCount: inProfit.length,
+      ...(hasBackToEven
+        ? {
+            backToEvenWallets: backToEven!.wallets,
+            backToEvenPct: backToEven!.pctOfCirculating.toFixed(2),
+          }
+        : {}),
+      ...(hasBiggest
+        ? {
+            biggestAddress: biggest!.address.slice(0, 8),
+            biggestPnlPct: biggest!.pnlPct.toFixed(0),
+            biggestUnsold: biggest!.unsoldTokens.toFixed(0),
+          }
+        : {}),
+    };
+    const biggestTail = hasBiggest
+      ? `浮盈最大且仍有筹码的是 ${biggest!.address.slice(0, 8)}…（+${biggest!.pnlPct.toFixed(0)}%，还有 ${biggest!.unsoldTokens.toFixed(0)} 枚没卖）。`
+      : '';
+    const unsoldTail = '⚠️ 这是**窗口内能配对出来的那部分**筹码，不是全部持仓。';
+    if (hasBackToEven) {
+      add(
+        'low',
+        'sellPressure.unsoldSummaryBackToEven',
+        `未卖筹码 ${unsoldPctOfCirculating.toFixed(1)}% 流通盘（可分析部分）`,
+        `${rows.length} 个钱包的未卖筹码按成本折算共 ${totalCostSol.toFixed(2)} SOL；` +
+          `其中 ${inProfit.length} 个处于浮盈。` +
+          `回本区（-10%~+10%）里有 ${backToEven!.wallets} 个钱包、合计 ${backToEven!.pctOfCirculating.toFixed(2)}% 流通盘 —— ` +
+          '这个区间最容易触发卖出。' +
+          biggestTail +
+          unsoldTail,
+        unsoldParams,
+      );
+    } else {
+      add(
+        'low',
+        'sellPressure.unsoldSummary',
+        `未卖筹码 ${unsoldPctOfCirculating.toFixed(1)}% 流通盘（可分析部分）`,
+        `${rows.length} 个钱包的未卖筹码按成本折算共 ${totalCostSol.toFixed(2)} SOL；` +
+          `其中 ${inProfit.length} 个处于浮盈。` +
+          biggestTail +
+          unsoldTail,
+        unsoldParams,
+      );
+    }
   }
 
   // 免费拿到筹码的地址：单列说明，不混进「浮盈 +54771%」这类结论
@@ -322,35 +380,58 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
   if (mintedWallets.length > 0) {
     add(
       'low',
+      'sellPressure.mintedWallets',
       `${mintedWallets.length} 个地址的筹码是铸造/创建获得的（无买入价）`,
       `这些地址通过创建/铸造交易拿到约 ${mintedUnsoldTokens.toFixed(0)} 枚代币，` +
         '只付了网络手续费 —— 它们**没有买入成本**，因此不计入盈亏分桶' +
         '（把手续费当成本会算出「浮盈几十万%」这种假数字）。' +
         '这类筹码的抛压只能用「占比」衡量：它们在任何价位卖出都是纯利润。',
+      { count: mintedWallets.length, tokens: mintedUnsoldTokens.toFixed(0) },
     );
   }
 
   if (deepWallets > 0) {
     add(
       'good',
+      'sellPressure.deepCoverage',
       `${deepWallets} 个钱包的成本来自完整历史（不是窗口估算）`,
       `深度模式逐地址拉取了前 ${sp.deepAddresses ?? deepWallets} 名持有人的全部历史成交，` +
         `其中 ${deepWallets} 个能算出**真实成本**与**真实已卖比例**。` +
         '这些地址不受「成交窗口中段有缺口」影响 —— 它们的卖出记录是完整的，' +
         '因此表里标「完整历史」的行可信度明显高于「窗口估算」的行。',
+      { deepWallets, deepAddresses: sp.deepAddresses ?? deepWallets },
     );
   }
 
   if (exited > 0) {
-    add(
-      'good',
-      `${exited} 个钱包已基本卖光`,
-      `窗口内这些地址卖出 ≥ ${t.exitedSoldPct}% 的买入量，因此**不再计入抛压** —— ` +
-        '不管它们当初赚了多少（赚了但已经跑了的筹码不会再来砸盘）。' +
-        (distributing > 0
-          ? `另有 ${distributing} 个正在派发中（卖出 ${t.distributingSoldPct}%–${t.exitedSoldPct}%），只按剩余部分计入。`
-          : ''),
-    );
+    // 「另有 N 个正在派发中」是一整句独立说明 → 拆 id
+    const exitedParams = {
+      exited,
+      exitedSoldPct: t.exitedSoldPct,
+      ...(distributing > 0
+        ? { distributing, distributingSoldPct: t.distributingSoldPct }
+        : {}),
+    };
+    if (distributing > 0) {
+      add(
+        'good',
+        'sellPressure.exitedWithDistributing',
+        `${exited} 个钱包已基本卖光`,
+        `窗口内这些地址卖出 ≥ ${t.exitedSoldPct}% 的买入量，因此**不再计入抛压** —— ` +
+          '不管它们当初赚了多少（赚了但已经跑了的筹码不会再来砸盘）。' +
+          `另有 ${distributing} 个正在派发中（卖出 ${t.distributingSoldPct}%–${t.exitedSoldPct}%），只按剩余部分计入。`,
+        exitedParams,
+      );
+    } else {
+      add(
+        'good',
+        'sellPressure.exited',
+        `${exited} 个钱包已基本卖光`,
+        `窗口内这些地址卖出 ≥ ${t.exitedSoldPct}% 的买入量，因此**不再计入抛压** —— ` +
+          '不管它们当初赚了多少（赚了但已经跑了的筹码不会再来砸盘）。',
+        exitedParams,
+      );
+    }
   }
 
   // 现价不可靠时的替代视图：直接按**成本价相对区间**分布，不涉及盈亏。

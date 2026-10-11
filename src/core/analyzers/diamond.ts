@@ -73,14 +73,24 @@ function median(xs: number[]): number | undefined {
 export function analyzeDiamond(data: ScanInput): DimensionResult {
   const t = THRESHOLDS.diamond;
   const findings: Finding[] = [];
-  const add = (severity: Severity, title: string, detail: string) =>
-    findings.push({ severity, title, detail });
+  /**
+   * 结论只带 id + 参数，文案由渲染层按语言决定。
+   * `title`/`detail` 是过渡期的中文回退，迁完后删除。
+   */
+  const add = (
+    severity: Severity,
+    id: string,
+    zhTitle: string,
+    zhDetail: string,
+    params?: Record<string, string | number>,
+  ) => findings.push({ severity, id, ...(params ? { params } : {}), title: zhTitle, detail: zhDetail });
 
   const d = data.diamond;
   // 没有逐地址成交 = 未知。**不能用 0 表示**，否则界面上会变成「钻石手 0 个」。
   if (!d || d.trades.length === 0) {
     add(
       'medium',
+      'diamond.noData',
       '持仓行为无法分析',
       '没有取到逐地址成交明细（Helius 增强接口不可用或该代币还没有成交），' +
         '因此无法判断谁买了不卖。这不是「没有钻石手」，是这一项没数据。',
@@ -177,48 +187,126 @@ export function analyzeDiamond(data: ScanInput): DimensionResult {
   // 根本不在样本里，它们既没出现在最早窗口、也没出现在最近窗口。
   const coverageLow = d.windowCoveragePct < t.minWindowCoveragePct;
   if (coverageLow) {
-    add(
-      'medium',
-      `成交窗口只覆盖了 ${d.windowCoveragePct.toFixed(1)}% 的时间跨度`,
-      `最近成交只取到最后 ${d.trades.length} 笔、最早只取到前 ${THRESHOLDS.liquidity.sniperWindowTrades} 笔，` +
-        (d.gapDays !== undefined ? `中间有约 ${Math.round(d.gapDays)} 天没有数据。` : '') +
-        '因此下面的人数与比例**只是窗口内的观测值，几乎肯定低估**：' +
-        '缺口期间买入并一直持有的钱包不在样本里。要拿到完整画像需要逐地址拉历史（未实现）。',
-    );
+    // 「中间有约 N 天没有数据」只在 gapDays 可算时出现 → 拆 id
+    const coverageParams = {
+      coveragePct: d.windowCoveragePct.toFixed(1),
+      trades: d.trades.length,
+      earlyTrades: THRESHOLDS.liquidity.sniperWindowTrades,
+      ...(d.gapDays !== undefined ? { gapDays: Math.round(d.gapDays) } : {}),
+    };
+    if (d.gapDays !== undefined) {
+      add(
+        'medium',
+        'diamond.windowCoverageLowWithGap',
+        `成交窗口只覆盖了 ${d.windowCoveragePct.toFixed(1)}% 的时间跨度`,
+        `最近成交只取到最后 ${d.trades.length} 笔、最早只取到前 ${THRESHOLDS.liquidity.sniperWindowTrades} 笔，` +
+          `中间有约 ${Math.round(d.gapDays)} 天没有数据。` +
+          '因此下面的人数与比例**只是窗口内的观测值，几乎肯定低估**：' +
+          '缺口期间买入并一直持有的钱包不在样本里。要拿到完整画像需要逐地址拉历史（未实现）。',
+        coverageParams,
+      );
+    } else {
+      add(
+        'medium',
+        'diamond.windowCoverageLow',
+        `成交窗口只覆盖了 ${d.windowCoveragePct.toFixed(1)}% 的时间跨度`,
+        `最近成交只取到最后 ${d.trades.length} 笔、最早只取到前 ${THRESHOLDS.liquidity.sniperWindowTrades} 笔，` +
+          '因此下面的人数与比例**只是窗口内的观测值，几乎肯定低估**：' +
+          '缺口期间买入并一直持有的钱包不在样本里。要拿到完整画像需要逐地址拉历史（未实现）。',
+        coverageParams,
+      );
+    }
   }
 
   if (withEvidence === 0) {
-    add(
-      'low',
-      '没有发现长期持有的钱包',
-      `在 ${analyzed} 个可分析的钱包里，没有一个符合「只买未卖、仍持仓、持有超过 ${t.minHoldDays} 天」。` +
-        (d.gapDays !== undefined
-          ? `⚠️ 成交窗口中间有约 ${Math.round(d.gapDays)} 天没拉到，所以这只能说「窗口内没看到」，不能断言没人长期持有。`
-          : ''),
-    );
+    // 结尾整句随 gapDays 有无二选一 → 拆 id
+    const noHolderParams = {
+      analyzed,
+      minHoldDays: t.minHoldDays,
+      ...(d.gapDays !== undefined ? { gapDays: Math.round(d.gapDays) } : {}),
+    };
+    if (d.gapDays !== undefined) {
+      add(
+        'low',
+        'diamond.noLongTermHoldersWithGap',
+        '没有发现长期持有的钱包',
+        `在 ${analyzed} 个可分析的钱包里，没有一个符合「只买未卖、仍持仓、持有超过 ${t.minHoldDays} 天」。` +
+          `⚠️ 成交窗口中间有约 ${Math.round(d.gapDays)} 天没拉到，所以这只能说「窗口内没看到」，不能断言没人长期持有。`,
+        noHolderParams,
+      );
+    } else {
+      add(
+        'low',
+        'diamond.noLongTermHolders',
+        '没有发现长期持有的钱包',
+        `在 ${analyzed} 个可分析的钱包里，没有一个符合「只买未卖、仍持仓、持有超过 ${t.minHoldDays} 天」。`,
+        noHolderParams,
+      );
+    }
   } else {
-    add(
-      'good',
-      `钻石手 ${withEvidence} 个（中位持有 ${medianHoldDays?.toFixed(1) ?? '—'} 天）`,
-      `${analyzed} 个可分析钱包里有 ${withEvidence} 个符合「只买未卖 + 仍持仓 + 持有 ≥ ${t.minHoldDays} 天」，` +
-        `占 ${sharePct.toFixed(1)}%` +
-        (coverageLow ? `（⚠️ 窗口只覆盖 ${d.windowCoveragePct.toFixed(1)}% 的时间跨度，实际人数应该更多）` : '') +
-        `；其中 ${strongEvidence} 个落在最早成交窗口内（证据最强），` +
-        `${addOnCount} 个有过加仓。` +
-        (evidence[0]
-          ? `拿得最久的是 ${evidence[0].address.slice(0, 8)}…：持有 ${evidence[0].holdDays} 天，买入 ${evidence[0].buys} 次共 ${evidence[0].buySol} SOL` +
-            (evidence[0].holderPct !== undefined ? `，当前占总供应 ${evidence[0].holderPct.toFixed(2)}%` : '') +
-            '。'
-          : ''),
-    );
+    const top = evidence[0];
+    // ⚠️ 「（⚠️ 窗口只覆盖 X%…）」插在主句中间，英文语序下必须整句重写 → 拆 id。
+    // 其余尾部细节（最久持有者那句）保持拼接，见报告说明。
+    const diamondParams = {
+      count: withEvidence,
+      medianHoldDays: medianHoldDays?.toFixed(1) ?? '—',
+      analyzed,
+      minHoldDays: t.minHoldDays,
+      sharePct: sharePct.toFixed(1),
+      strongEvidence,
+      addOnCount,
+      ...(coverageLow ? { coveragePct: d.windowCoveragePct.toFixed(1) } : {}),
+      ...(top
+        ? {
+            topAddress: top.address.slice(0, 8),
+            topHoldDays: top.holdDays,
+            topBuys: top.buys,
+            topBuySol: top.buySol,
+            ...(top.holderPct !== undefined ? { topHolderPct: top.holderPct.toFixed(2) } : {}),
+          }
+        : {}),
+    };
+    const tail = top
+      ? `拿得最久的是 ${top.address.slice(0, 8)}…：持有 ${top.holdDays} 天，买入 ${top.buys} 次共 ${top.buySol} SOL` +
+        (top.holderPct !== undefined ? `，当前占总供应 ${top.holderPct.toFixed(2)}%` : '') +
+        '。'
+      : '';
+    if (coverageLow) {
+      add(
+        'good',
+        'diamond.holdersLowCoverage',
+        `钻石手 ${withEvidence} 个（中位持有 ${medianHoldDays?.toFixed(1) ?? '—'} 天）`,
+        `${analyzed} 个可分析钱包里有 ${withEvidence} 个符合「只买未卖 + 仍持仓 + 持有 ≥ ${t.minHoldDays} 天」，` +
+          `占 ${sharePct.toFixed(1)}%` +
+          `（⚠️ 窗口只覆盖 ${d.windowCoveragePct.toFixed(1)}% 的时间跨度，实际人数应该更多）` +
+          `；其中 ${strongEvidence} 个落在最早成交窗口内（证据最强），` +
+          `${addOnCount} 个有过加仓。` +
+          tail,
+        diamondParams,
+      );
+    } else {
+      add(
+        'good',
+        'diamond.holders',
+        `钻石手 ${withEvidence} 个（中位持有 ${medianHoldDays?.toFixed(1) ?? '—'} 天）`,
+        `${analyzed} 个可分析钱包里有 ${withEvidence} 个符合「只买未卖 + 仍持仓 + 持有 ≥ ${t.minHoldDays} 天」，` +
+          `占 ${sharePct.toFixed(1)}%` +
+          `；其中 ${strongEvidence} 个落在最早成交窗口内（证据最强），` +
+          `${addOnCount} 个有过加仓。` +
+          tail,
+        diamondParams,
+      );
+    }
   }
 
   if (robotCount > 0) {
     add(
       'low',
+      'diamond.robotsExcluded',
       `排除 ${robotCount} 个高频交易地址`,
       `这些地址在窗口内买卖交替 ≥ ${t.robotTrades} 次，属于机器人/做市行为，` +
         '既不是钻石手也不是散户，因此不计入比例（否则会把持仓结构完全带偏）。',
+      { count: robotCount, robotTrades: t.robotTrades },
     );
   }
 
@@ -226,9 +314,11 @@ export function analyzeDiamond(data: ScanInput): DimensionResult {
   if (withEvidence > 0 && sharePct >= t.strongSharePct && !coverageLow) {
     add(
       'good',
+      'diamond.concentratedInLongTerm',
       '筹码集中在长期持有者手里',
       `钻石手占可分析钱包的 ${sharePct.toFixed(1)}%，说明这批筹码大概率不会马上砸出来。` +
         '⚠️ 这只是持仓结构描述，不构成买入理由 —— 老币的持有者天然比新币待得久。',
+      { sharePct: sharePct.toFixed(1) },
     );
   }
 
