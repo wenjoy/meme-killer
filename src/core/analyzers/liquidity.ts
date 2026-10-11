@@ -17,6 +17,17 @@
 import { THRESHOLDS, scoreFromFindings } from '../constants';
 import type { DimensionResult, Finding, ScanInput, Severity } from '../types';
 
+/** 截断长 base58（地址/签名）：只用于展示，完整值在明细里 */
+function short(v: string, head = 4, tail = 4): string {
+  return v.length > head + tail + 1 ? `${v.slice(0, head)}…${v.slice(-tail)}` : v;
+}
+
+/** Unix 秒 → `MM-DD HH:mm UTC`（链上核对时用它对齐 Solscan 显示的时间） */
+function utcTime(ts?: number): string {
+  if (ts === undefined) return '时间未知';
+  return `${new Date(ts * 1000).toISOString().slice(5, 16).replace('T', ' ')} UTC`;
+}
+
 export function analyzeLiquidity(data: ScanInput): DimensionResult {
   const l = data.liquidity ?? {};
   const t = THRESHOLDS.liquidity;
@@ -201,6 +212,23 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
     );
   }
 
+  // 最大几笔卖单的链上凭据：签名 + 时间 + 钱包。没有这个，「最大单笔 2.028 SOL」
+  // 只是个无法验证的数字；有了它，读者能点到 Solscan 看到是谁什么时候砸的。
+  const topSells = volUnit === 'SOL' ? (l.largeSells ?? []) : [];
+  const sellEvidence = topSells.length
+    ? `最大 ${topSells.length} 笔卖单（签名可在 Solscan 核对，完整明细见下方「大额卖单明细」）：` +
+      topSells
+        .slice(0, 3)
+        .map(
+          (x) =>
+            `${x.sol.toFixed(3)} SOL @ ${utcTime(x.ts)}` +
+            (x.trader ? `，钱包 ${short(x.trader)}` : '') +
+            `，签名 ${short(x.signature, 6, 6)}`,
+        )
+        .join('；') +
+      '。'
+    : '';
+
   // 笔数比与金额比背离：笔数很强，金额却在流出（比例判定，与单位无关）
   if (sellCount > 0 && totalVol > 0) {
     const countRatio = buyCount / sellCount;
@@ -215,7 +243,8 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
             ? sizeEvidence
             : volUnit === 'SOL'
               ? ''
-              : `（金额为 ${volUnit} 口径，拿不到单笔 SOL 量级，无法进一步核对。）`),
+              : `（金额为 ${volUnit} 口径，拿不到单笔 SOL 量级，无法进一步核对。）`) +
+          sellEvidence,
       );
     }
   }
@@ -248,6 +277,8 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
       ...(audit?.windowSec !== undefined
         ? { sampleWindowMin: Math.max(1, Math.round(audit.windowSec / 60)) }
         : {}),
+      // 明细列表交给 UI 渲染成可点击的 Solscan 链接
+      ...(topSells.length > 0 ? { largeSells: topSells } : {}),
       ...(sniperPct !== undefined ? { sniperHoldPct: sniperPct } : {}),
       ...(l.holderCount !== undefined ? { holderCount: l.holderCount } : {}),
       ...(l.liquidityUsd !== undefined ? { liquidityUsd: l.liquidityUsd } : {}),

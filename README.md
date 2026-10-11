@@ -207,6 +207,33 @@ Pump.fun 的交易由**用户钱包**签名，fee payer 往往是买家而不是
 只有单边成交时**不给**这些数字：那时中位数会算成 0，会被读成「卖单很小」，
 而真相是「没有卖单」。USD 口径同理不换算单笔量级（受价格波动影响）。
 
+### 8.1 每个数字都要能点到链上核对
+
+`最大单笔卖单 2.028 SOL，占卖出总额 87.7%` 仍然只是一个需要读者相信的数字。
+所以最大的几笔卖单会带上**交易签名、时间、卖出钱包**，UI 里签名直接链到 Solscan
+（`dimensions.liquidity.metrics.largeSells`）：
+
+```
+[high] 笔数与金额背离
+  …最大单笔卖单 2.028 SOL，占卖出总额 87.7%；前 5 大卖单合计占 96.4%。
+  最大 5 笔卖单（签名可在 Solscan 核对，完整明细见下方「大额卖单明细」）：
+  2.028 SOL @ 10-11 00:26 UTC，钱包 Cttj…2nou，签名 4JBM1K…uEfYXZ；
+  0.108 SOL @ 10-08 17:46 UTC，钱包 76Y1…w8FT，签名 3tSPLq…MqLkei；
+  0.037 SOL @ 10-11 01:30 UTC，钱包 BzQB…2bkN，签名 5qWZim…ShanAf。
+```
+
+用 `getTransaction` 复核上面第一笔的实测结果 —— 报告的每个数都对得上：
+
+| 报告里写的 | 链上读到的 |
+|---|---|
+| 时间 `10-11 00:26 UTC` | `blockTime 2026-10-11T00:26:49Z` |
+| 卖出钱包 `Cttj…2nou` | `fee payer = CttjirRWSL19HuMJMBcb7RVs49Tf4AaNnEXw6vjH2nou` |
+| 金额 `2.028 SOL` | `postBalances − preBalances = +2.027926167 SOL`（收到 SOL＝卖出） |
+
+金额为 0 或没有签名的条目不进这份明细：无法核对的东西不进报告。
+只有一笔大额卖单时也照列 —— 这恰恰是最需要看的情况。
+
+
 ### 9. 权限必须读到 `null` 才算「已放弃」
 
 `c.mintAuthority ? 0 : 1` 会把 `undefined`（没读到）当成「已放弃」，

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { PublicKey } from '@solana/web3.js';
 import {
   RetryableError,
+  buildLargeSells,
   buildTradeSizeAudit,
   isLikelyMint,
   parseJupiterLockEscrow,
@@ -346,4 +347,26 @@ test('只有单边成交时不给量级证据（避免「卖单中位数 0」被
     }),
     undefined,
   );
+});
+
+test('大额卖单明细：按金额取前 N 笔并保留签名，空/零额条目不得混进来', () => {
+  const mk = (sol: number, sig: string) => ({ signature: sig, sol, ts: 1_700_000_000, trader: 'Wallet' });
+  const top = buildLargeSells(
+    [
+      mk(0.026, 'sig-a'),
+      mk(2.028, 'sig-big'),
+      mk(0, 'sig-zero'), // 金额 0（判定不出成交额）→ 不能当成「大额卖单」
+      { signature: '', sol: 9 }, // 没有签名 → 读者无法核对，剔除
+      mk(0.108, 'sig-c'),
+      mk(1.5, 'sig-d'),
+    ],
+    3,
+  )!;
+  assert.deepEqual(
+    top.map((s) => s.signature),
+    ['sig-big', 'sig-d', 'sig-c'],
+  );
+  assert.equal(top[0].sol, 2.028);
+  assert.equal(buildLargeSells([]), undefined);
+  assert.equal(buildLargeSells([mk(0, 'x')]), undefined);
 });

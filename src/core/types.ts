@@ -238,6 +238,11 @@ export interface LiquidityInfo {
     /** 前 5 大卖单占卖出总额的比例（%） */
     top5SellSharePct?: number;
   };
+  /**
+   * 最大的若干笔卖单（默认前 5），带交易签名 —— 供读者点开链上核对。
+   * 拿不到签名时为空（不是造一个假条目）。
+   */
+  largeSells?: LargeSellEvidence[];
   /** 持有人总数（RugCheck `totalHolders`） */
   holderCount?: number;
   /** 池地址，用于持仓剔除 */
@@ -337,8 +342,27 @@ export interface DimensionResult {
   score: number;
   vetoed: boolean;
   findings: Finding[];
-  metrics?: Record<string, number | string | Record<string, number> | CustodyMetric[]>;
+  metrics?: Record<
+    string,
+    number | string | Record<string, number> | CustodyMetric[] | LargeSellEvidence[]
+  >;
   error?: string;
+}
+
+/**
+ * 供 UI 直接渲染的大额卖单明细。
+ *
+ * 为什么要把签名透出来：`最大单笔卖单 2.028 SOL` 只是个数字，读者没法验证；
+ * 给出「签名 + 时间 + 卖出钱包」才能点到 Solscan 上看到底是谁、什么时候砸的。
+ */
+export interface LargeSellEvidence {
+  signature: string;
+  /** 成交额（SOL） */
+  sol: number;
+  /** 成交时间（Unix 秒） */
+  ts?: number;
+  /** 卖出的钱包（fee payer） */
+  trader?: string;
 }
 
 /** 供 UI 直接渲染的托管持仓列表项 */

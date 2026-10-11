@@ -1,7 +1,13 @@
 'use client';
 
 import { DIMENSION_ORDER, SEVERITY_ORDER } from '@/core/constants';
-import type { CustodyMetric, DimensionResult, Finding, ScanReport } from '@/core/types';
+import type {
+  CustodyMetric,
+  DimensionResult,
+  Finding,
+  LargeSellEvidence,
+  ScanReport,
+} from '@/core/types';
 import { RadarChart, SEVERITY_STYLE, ScoreRing, TONE } from './visuals';
 
 function FindingRow({ f }: { f: Finding }) {
@@ -394,6 +400,8 @@ export function Report({ report }: { report: ScanReport }) {
 
       <CustodySection report={report} />
 
+      <LargeSellsSection report={report} />
+
       <Provenance report={report} />
 
       {/* ── 五维详细发现 ─────────────────────────────────────── */}
@@ -413,6 +421,71 @@ export function Report({ report }: { report: ScanReport }) {
         任何仓位都请自行控制风险，并交叉验证 RugCheck、DexScreener 等平台。
       </p>
     </div>
+  );
+}
+
+/**
+ * 大额卖单明细。
+ *
+ * 用户要求：`最大单笔卖单 2.028 SOL` 这种话要能自己核对。所以这里给出
+ * 时间、金额、卖出钱包与**交易签名**，签名直接链到 Solscan —— 点开就能看到
+ * 是谁在什么时候砸的，而不是只能选择相信这个数字。
+ */
+function LargeSellsSection({ report }: { report: ScanReport }) {
+  const m = report.dimensions.liquidity?.metrics;
+  const list = Array.isArray(m?.largeSells) ? (m.largeSells as LargeSellEvidence[]) : [];
+  if (list.length === 0) return null;
+
+  const total = list.reduce((s, x) => s + x.sol, 0);
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold text-ink-300">
+        大额卖单明细
+        <span className="ml-2 font-normal text-ink-500">
+          最近 100 笔里最大的 {list.length} 笔，合计 {total.toFixed(3)} SOL，点签名可在 Solscan 核对
+        </span>
+      </h2>
+      <div className="overflow-hidden rounded-xl border border-ink-700">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-ink-900/60 text-ink-400">
+            <tr>
+              <th className="px-3 py-2 font-medium">时间（UTC）</th>
+              <th className="px-3 py-2 text-right font-medium">金额 SOL</th>
+              <th className="px-3 py-2 font-medium">卖出钱包</th>
+              <th className="px-3 py-2 font-medium">交易签名</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-800">
+            {list.map((s) => (
+              <tr key={s.signature} className="bg-ink-950/40">
+                <td className="px-3 py-2 font-mono text-ink-300">
+                  {s.ts === undefined ? '—' : new Date(s.ts * 1000).toISOString().slice(5, 16).replace('T', ' ')}
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-ink-200">{s.sol.toFixed(3)}</td>
+                <td className="px-3 py-2 font-mono text-ink-300">
+                  {s.trader ? shortAddr(s.trader) : '—'}
+                </td>
+                <td className="px-3 py-2">
+                  <a
+                    className="font-mono text-accent underline decoration-dotted hover:text-accent/80"
+                    href={`https://solscan.io/tx/${s.signature}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {shortAddr(s.signature)}
+                  </a>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] leading-relaxed text-ink-500">
+        ⚠️ 「大额」是相对该代币自身成交而言：这里列的是<strong>样本内最大的几笔</strong>，
+        不代表金额上有绝对意义。样本口径与上面的笔数/金额一致（最近 100 笔成交）。
+      </p>
+    </section>
   );
 }
 

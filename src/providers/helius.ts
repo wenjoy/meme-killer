@@ -32,6 +32,7 @@ import {
 } from '@/core/constants';
 import type {
   ContractInfo,
+  LargeSellEvidence,
   DeveloperInfo,
   FieldOrigin,
   HolderCustody,
@@ -685,6 +686,8 @@ interface TxActivity {
   /** 每笔成交的 SOL 金额：用来给出「小额买盘 / 大额卖盘」的直观证据 */
   buySizesSol: number[];
   sellSizesSol: number[];
+  /** 卖单明细（含签名）：让「最大一笔卖单」可以点到 Solscan 核对 */
+  sells: LargeSellEvidence[];
   /** 样本时间范围（秒）—— 100 笔可能跨几分钟，也可能跨几天，必须让读者知道 */
   minTs?: number;
   maxTs?: number;
@@ -754,6 +757,9 @@ function classifyTx(
     acc.sellCount++;
     acc.sellVolumeSol += sol;
     acc.sellSizesSol.push(sol);
+    if (tx.signature) {
+      acc.sells.push({ signature: tx.signature, sol, ...(ts !== undefined ? { ts } : {}), ...(trader ? { trader } : {}) });
+    }
   }
 
   // 经验推断池地址：买单里把代币交出来的对手方就是池/金库
@@ -810,6 +816,23 @@ function classifyTx(
       for (const t of c.tokenBalanceChanges ?? []) if (t.mint) acc.mintedMints.add(t.mint);
     }
   }
+}
+
+/**
+ * 最大的若干笔卖单（默认 5 笔），带交易签名。
+ *
+ * 报告里「最大单笔卖单 2.028 SOL，占卖出总额 87.7%」必须能点到链上核对，
+ * 否则读者只能选择相信或不信。按金额降序取前 N，金额为 0 的不算。
+ */
+export function buildLargeSells(
+  sells: LargeSellEvidence[],
+  limit = 5,
+): LargeSellEvidence[] | undefined {
+  const top = sells
+    .filter((s) => s.signature && s.sol > 0)
+    .sort((a, b) => b.sol - a.sol)
+    .slice(0, limit);
+  return top.length > 0 ? top : undefined;
 }
 
 /**
@@ -870,6 +893,7 @@ function analyzeTxs(
     sellVolumeSol: 0,
     buySizesSol: [],
     sellSizesSol: [],
+    sells: [],
     poolCandidates: new Map(),
     devSells: [],
     devBuys: 0,
@@ -982,6 +1006,8 @@ export async function fetchMintActivity(
       liquidity.sellVolumeSol = Math.round(act.sellVolumeSol * 1e4) / 1e4;
       const audit = buildTradeSizeAudit(act);
       if (audit) liquidity.tradeSizeAudit = audit;
+      const largeSells = buildLargeSells(act.sells);
+      if (largeSells) liquidity.largeSells = largeSells;
       origin = 'onchain';
     } else {
       warnings.push(

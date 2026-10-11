@@ -998,3 +998,62 @@ test('「笔数与金额背离」必须给出单笔量级证据，不能只给�
   assert.equal((r.metrics ?? {}).sellMaxSol, 2.028);
   assert.equal((r.metrics ?? {}).sampleWindowMin, 3925);
 });
+
+test('大额卖单必须给出签名/时间/钱包，且明细进 metrics 供 UI 链到 Solscan', () => {
+  const r = analyzeLiquidity(
+    input({
+      liquidity: {
+        buyCount: 64,
+        sellCount: 14,
+        buyVolumeSol: 1.847,
+        sellVolumeSol: 2.285,
+        tradeSizeAudit: {
+          trades: 78,
+          windowSec: 3925 * 60,
+          buyMedianSol: 0.0025,
+          sellMedianSol: 0.0113,
+          buyMaxSol: 0.275,
+          sellMaxSol: 2.028,
+          largestSellSharePct: 88.8,
+          top5SellSharePct: 97.5,
+        },
+        largeSells: [
+          {
+            signature: '5xK2mVbQwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUiOpAsDf',
+            sol: 2.028,
+            ts: 1_756_600_000, // 2025-08-30 前后
+            trader: 'A6QVMEvCH8xQ4o7nx2tkob42MsYGuPcKE4hwx5Zvj9kj',
+          },
+          {
+            signature: '2bQwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUiOpAsDfGhJkLzXcVbNmQwErTyUiOpAsDfGhJkL',
+            sol: 0.108,
+            ts: 1_756_600_000,
+          },
+        ],
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '笔数与金额背离')!;
+  assert.ok(f.detail.includes('2.028 SOL @'), '每笔要带金额与时间');
+  assert.ok(f.detail.includes('UTC'), '时间要标明时区，否则没法和 Solscan 对齐');
+  assert.ok(f.detail.includes('A6QV…j9kj'), '要给出卖出钱包');
+  assert.ok(/签名 [A-Za-z0-9]{6}…[A-Za-z0-9]{6}/.test(f.detail), `要给出可核对的签名片段：${f.detail}`);
+  const list = (r.metrics ?? {}).largeSells as { signature: string; sol: number }[];
+  assert.equal(list.length, 2);
+  assert.equal(list[0].signature.startsWith('5xK2mVb'), true, '完整签名必须进 metrics，UI 才能拼 Solscan 链接');
+});
+
+test('不是 SOL 口径（USD 推算）时不得给出大额卖单明细', () => {
+  const r = analyzeLiquidity(
+    input({
+      liquidity: {
+        buyCount: 64,
+        sellCount: 14,
+        buyVolumeUsd: 1847,
+        sellVolumeUsd: 2285,
+        largeSells: [{ signature: 'sig', sol: 2.028, ts: 1_756_600_000 }],
+      },
+    }),
+  );
+  assert.equal((r.metrics ?? {}).largeSells, undefined, 'USD 口径的单笔 SOL 金额是推算值，不能当链上凭据');
+});
