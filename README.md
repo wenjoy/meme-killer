@@ -911,6 +911,52 @@ add('high', 'holders.top10Danger', 'Top10 持仓过度集中',
 首次访问按浏览器语言探测（`zh*` → 中文，其余 → 英文），之后记住用户的选择。
 切换时同步更新 `<html lang>`，影响字体渲染与屏幕阅读器发音。
 
+
+#### 覆盖面：连「采集告警」和「常量表」也要走字典
+
+第一轮只把「界面文案」和「分析器结论」做了国际化，实测英文界面仍有
+164 处中文。原因是中文还藏在三类地方：
+
+1. **分析器的组合句**（`pieces.*`）。分析器把内联拼接的中文片段当作
+   `params` 传给 UI，例如抛压的 `sellEvidence` 里含「，钱包 X，签名 Y」
+   这类连接词。改成输出**结构化分片**，渲染层按语言组装。
+2. **providers 的采集告警**（`warnings.*`，53 条）。`warnings: string[]`
+   改为 `Warning[]`。⚠️ 这里有个安全点：`warn()` 的 `text`（中文回退）是
+   **必填**的 —— 少一条告警会被读成「数据是全的」，不能因为国际化而丢。
+3. **常量表里的展示名**。`AMM_PROGRAMS`（PumpSwap / Meteora DLMM …）、
+   `CUSTODY_PROGRAMS`（Jupiter Lock）、盈亏分桶、holder kind 长短名。
+
+第 3 类里 `CUSTODY_PROGRAMS` 的 `labelKey` 一开始没往
+`HolderCustody → HolderRow → CustodyMetric` 这条链透传，结果英文界面
+显示「Jupiter Lock（锁仓）」—— 类型系统帮不上忙，只能靠实测发现。
+
+#### 三个「界面直接显示出一串 key」的坑
+
+这三个都**不报错**：`t()` 缺 key 时返回 key 本身（刻意的设计，让漏译显眼），
+所以类型检查、构建、以及「字典完整性」测试全部通过，只有真跑起来才看得见。
+
+1. **扁平带点 key 写错了命名空间。**
+   `findings` / `warnings` / `pieces` 是**刻意的扁平 Record**（key 自带全前缀，
+   `lookup()` 有专门分支）。但 `report.common.*` 走的是分层查找。
+   有人按前者的习惯把 holder kind 短名写成 `'pool.short'`，于是
+   `holderKinds.pool.short` 永远查不到，界面直接显示这串 key。
+
+2. **中文字典被从英文复制。** `pieces.zh.ts` 的 poolLabels 是英文，
+   中文界面显示 `pump.fun bonding curve`。
+   ⚠️「能查到」类测试**查不出**这个 —— 它能查到，只是语言错了。
+   所以另加了一条「中文字典里不得出现与英文完全相同的成串英文」
+   （豁免专有名词，以及 `{sol} SOL @ {time}` 这种纯数据模板）。
+
+3. **告警参数本身是字典 key 列表。** AMM 池类型以
+   `pieces.poolLabels.pumpswap,pieces.poolLabels.meteoraDlmm` 形式传入，
+   需要 `localizeWarning` 二次解析，否则英文告警里夹着中文池类型名。
+
+这三条现在都有 `src/i18n/keys.test.ts` 钉住。
+
+**一条经验**：i18n 的测试全绿 ≠ 界面没有中文。
+上面每个 bug 都是在**浏览器里扫一遍 innerText** 才发现的，
+所以验收标准是「英文界面残留中文 = 0」，而不是「测试通过」。
+
 ## 项目结构
 
 ```
