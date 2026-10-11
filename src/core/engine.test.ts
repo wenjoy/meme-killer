@@ -853,10 +853,7 @@ test('【口径下限】持有人太少时不得用「占流通盘」百分比�
     !tooFewTitles.some((t) => t.includes('Top10 持仓偏集中')),
     '人数不足时不能给出「Top10 偏集中」这种百分比结论',
   );
-  assert.ok(
-    !tooFew.findings.some((f) => f.severity === 'veto' && f.title.includes('Top10')),
-    '人数不足时更不能据此触发硬否决',
-  );
+  assert.equal(tooFew.vetoed, false, '人数不足时更不能据此触发硬否决');
   assert.ok(
     tooFewTitles.some((t) => t.includes('百分比口径在此不适用')),
     '必须明确告诉用户百分比在这里不适用，而不是沉默',
