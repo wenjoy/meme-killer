@@ -437,6 +437,8 @@ function LargeSellsSection({ report }: { report: ScanReport }) {
   if (list.length === 0) return null;
 
   const total = list.reduce((s, x) => s + x.sol, 0);
+  // 0 = 本次没取到最早成交；此时「不在最早 25 笔内」这句话不成立，必须换个说法
+  const windowKnown = m?.earlyBuyerWindowKnown === undefined ? undefined : m.earlyBuyerWindowKnown === 1;
 
   return (
     <section className="space-y-3">
@@ -453,6 +455,8 @@ function LargeSellsSection({ report }: { report: ScanReport }) {
               <th className="px-3 py-2 font-medium">时间（UTC）</th>
               <th className="px-3 py-2 text-right font-medium">金额 SOL</th>
               <th className="px-3 py-2 font-medium">卖出钱包</th>
+              <th className="px-3 py-2 font-medium">身份</th>
+              <th className="px-3 py-2 font-medium">当前持仓</th>
               <th className="px-3 py-2 font-medium">交易签名</th>
             </tr>
           </thead>
@@ -465,6 +469,38 @@ function LargeSellsSection({ report }: { report: ScanReport }) {
                 <td className="px-3 py-2 text-right font-mono text-ink-200">{s.sol.toFixed(3)}</td>
                 <td className="px-3 py-2 font-mono text-ink-300">
                   {s.trader ? shortAddr(s.trader) : '—'}
+                </td>
+                <td className="px-3 py-2">
+                  {s.isCreator ? (
+                    <span className="text-danger">部署者</span>
+                  ) : s.earlyBuyerIndex !== undefined ? (
+                    <span className="text-warn" title="代币最早 25 笔成交内的买家 —— 开盘就进场的人在出货">
+                      开盘第 {s.earlyBuyerIndex + 1} 笔买入
+                    </span>
+                  ) : windowKnown === false ? (
+                    <span
+                      className="text-ink-400"
+                      title="本次没取到该代币的最早成交，无法判断身份 —— 不要读成「不是狙击手」"
+                    >
+                      身份未知（没取到最早成交）
+                    </span>
+                  ) : (
+                    <span
+                      className="text-ink-400"
+                      title="不是最早 25 笔成交的付款方；但这不等于确定不是早期买家（可能第 26 笔才买）"
+                    >
+                      不在最早 25 笔内
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-2 font-mono">
+                  {s.holderPctNow === undefined ? (
+                    <span className="text-ink-400">已不在前 20</span>
+                  ) : (
+                    <span className={s.sniperNow ? 'text-warn' : 'text-ink-200'}>
+                      {s.holderPctNow.toFixed(2)}%{s.sniperNow ? '（狙击仓位）' : ''}
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <a
@@ -484,6 +520,9 @@ function LargeSellsSection({ report }: { report: ScanReport }) {
       <p className="text-[11px] leading-relaxed text-ink-500">
         ⚠️ 「大额」是相对该代币自身成交而言：这里列的是<strong>样本内最大的几笔</strong>，
         不代表金额上有绝对意义。样本口径与上面的笔数/金额一致（最近 100 笔成交）。
+        「身份」列看的是这些钱包<strong>是不是开盘那批人</strong>：开盘就买入的地址在出货
+        与半路进场的持有人止盈，性质完全不同。「不在最早 25 笔内」只说明它不是最早
+        25 笔成交的付款方，<strong>不等于</strong>确定不是早期买家。
       </p>
     </section>
   );

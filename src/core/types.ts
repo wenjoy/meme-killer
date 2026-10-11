@@ -243,6 +243,13 @@ export interface LiquidityInfo {
    * 拿不到签名时为空（不是造一个假条目）。
    */
   largeSells?: LargeSellEvidence[];
+  /**
+   * 「早期买家窗口」（代币最早若干笔成交）这次是否真的取到了。
+   *
+   * ⚠️ 必须区分三态：取不到时**不能**把大额卖单钱包标成「不在最早 25 笔内」——
+   * 那会被读成「不是狙击手」，而真相是「这次没查到」。抓不到最早成交时是 false。
+   */
+  earlyBuyerWindowKnown?: boolean;
   /** 持有人总数（RugCheck `totalHolders`） */
   holderCount?: number;
   /** 池地址，用于持仓剔除 */
@@ -363,6 +370,19 @@ export interface LargeSellEvidence {
   ts?: number;
   /** 卖出的钱包（fee payer） */
   trader?: string;
+  /**
+   * 该钱包在**最早 25 笔成交**（狙击窗口）里的位置（0-based，由 provider 标注）。
+   *
+   * ⚠️ undefined 只代表「不在最早 25 笔成交的付款方里」，不等于「不是早期买家」——
+   * 它可能是第 26 笔买入的。报告里必须按这个口径措辞。
+   */
+  earlyBuyerIndex?: number;
+  /** 该钱包就是部署者（由 provider 标注） */
+  isCreator?: boolean;
+  /** 分析器补齐：该钱包当前是否仍在前 20 大持仓，占比（%） */
+  holderPctNow?: number;
+  /** 分析器补齐：该持仓是否已被持仓维度标为狙击仓位 */
+  sniperNow?: boolean;
 }
 
 /** 供 UI 直接渲染的托管持仓列表项 */

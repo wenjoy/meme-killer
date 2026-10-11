@@ -1057,3 +1057,111 @@ test('不是 SOL 口径（USD 推算）时不得给出大额卖单明细', () =>
   );
   assert.equal((r.metrics ?? {}).largeSells, undefined, 'USD 口径的单笔 SOL 金额是推算值，不能当链上凭据');
 });
+
+test('大额卖单要标明「是不是开盘那批人」，并给出当前持仓', () => {
+  const r = analyzeLiquidity(
+    input({
+      holders: [
+        { address: 'SniperWallet111111111111111111111111111111', amount: 1, pct: 0.42 },
+        { address: 'OtherWallet1111111111111111111111111111111', amount: 1, pct: 3.1 },
+      ],
+      liquidity: {
+        buyCount: 64,
+        sellCount: 14,
+        buyVolumeSol: 1.847,
+        sellVolumeSol: 2.285,
+        tradeSizeAudit: {
+          trades: 78,
+          buyMedianSol: 0.0025,
+          sellMedianSol: 0.0113,
+          buyMaxSol: 0.275,
+          sellMaxSol: 2.028,
+        },
+        largeSells: [
+          {
+            signature: 'sig-sniper',
+            sol: 2.028,
+            ts: 1_756_600_000,
+            trader: 'SniperWallet111111111111111111111111111111',
+            earlyBuyerIndex: 2,
+            sniperNow: true,
+          },
+          {
+            signature: 'sig-late',
+            sol: 0.108,
+            ts: 1_756_600_000,
+            trader: 'LateWallet11111111111111111111111111111111',
+          },
+        ],
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '笔数与金额背离')!;
+  assert.ok(f.detail.includes('开盘最早 25 笔内的买家（第 3 笔）'), `要标出开盘身份：${f.detail}`);
+  assert.ok(f.detail.includes('1 笔来自开盘最早 25 笔成交内的地址'), '要给出数量，别让读者自己数');
+  assert.ok(f.detail.includes('仍在前 20 大持仓'), '砸盘后是否还持仓也是关键信息');
+  assert.ok(f.detail.includes('不等于确定不是早期买家'), '窗口外的地址不能被断言「不是早期买家」');
+
+  const list = (r.metrics ?? {}).largeSells as { holderPctNow?: number; sniperNow?: boolean }[];
+  assert.equal(list[0].holderPctNow, 0.42, '当前持仓要透给 UI');
+  assert.equal(list[0].sniperNow, true);
+  assert.equal(list[1].holderPctNow, undefined, '已不在前 20 大持仓 → 不写 0，写未知');
+});
+
+test('卖单钱包是部署者时单独标明', () => {
+  const r = analyzeLiquidity(
+    input({
+      liquidity: {
+        buyCount: 30, // 笔数 6 倍于卖单，金额却更小 → 触发背离
+        sellCount: 5,
+        buyVolumeSol: 1,
+        sellVolumeSol: 3,
+        largeSells: [
+          { signature: 'sig-dev', sol: 2.5, ts: 1_756_600_000, trader: 'DevWallet11', isCreator: true },
+        ],
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '笔数与金额背离')!;
+  assert.ok(f.detail.includes('1 笔来自部署者'), `部署者砸盘要单独说：${f.detail}`);
+});
+
+test('没取到最早成交时不得说「不在最早 25 笔内」（那是把未知说成清白）', () => {
+  const sells = [
+    { signature: 'sig-a', sol: 2.028, ts: 1_756_600_000, trader: 'Dumper111111111111111111111111111111111111' },
+  ];
+  // earlyBuyerWindowKnown = false：最早成交这次没拿到
+  const unknown = analyzeLiquidity(
+    input({
+      liquidity: {
+        buyCount: 30,
+        sellCount: 5,
+        buyVolumeSol: 1,
+        sellVolumeSol: 3,
+        earlyBuyerWindowKnown: false,
+        largeSells: sells,
+      },
+    }),
+  );
+  const f = unknown.findings.find((x) => x.title === '笔数与金额背离')!;
+  assert.ok(f.detail.includes('无法判断这些地址是不是开盘就买入的'), `要给未知口径：${f.detail}`);
+  assert.ok(!f.detail.includes('没有一笔来自开盘最早 25 笔'), '不能把未知说成「不是狙击手」');
+  assert.equal((unknown.metrics ?? {}).earlyBuyerWindowKnown, 0);
+
+  // 窗口可用且确实不在里面 → 才可以说
+  const known = analyzeLiquidity(
+    input({
+      liquidity: {
+        buyCount: 30,
+        sellCount: 5,
+        buyVolumeSol: 1,
+        sellVolumeSol: 3,
+        earlyBuyerWindowKnown: true,
+        largeSells: sells,
+      },
+    }),
+  );
+  const g = known.findings.find((x) => x.title === '笔数与金额背离')!;
+  assert.ok(g.detail.includes('没有一笔来自开盘最早 25 笔成交内的地址'));
+  assert.equal((known.metrics ?? {}).earlyBuyerWindowKnown, 1);
+});

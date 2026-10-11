@@ -12,6 +12,7 @@
  * 2. **覆盖率不足时拒绝给结论**。没数据就不给分数、不给仓位建议。
  * 3. 不猜。拿不到的字段留空，不用启发式编一个看起来确定的数字。
  */
+import { THRESHOLDS } from '@/core/constants';
 import { scan } from '@/core/engine';
 import type { FieldOrigin, LiquidityInfo, RawHolder, ScanInput, ScanMeta, ScanReport } from '@/core/types';
 import { fetchDexScreener } from './dexscreener';
@@ -96,8 +97,9 @@ export function mergeInputs(parts: {
   const sniperPct = holders.filter((h) => h.isSniper).reduce((s, h) => s + (h.pct ?? 0), 0);
   if (activity.earlyBuyers.length > 0) {
     warnings.push(
-      `狙击仓位为推算值：取最早 ${activity.earlyBuyers.length} 笔成交的付款方，` +
-        '与当前前 20 大持仓求交集（链上只返回前 20），因此只是下限，不是全量。',
+      `狙击仓位为推算值：取代币最早 ${THRESHOLDS.liquidity.sniperWindowTrades} 笔成交，` +
+        `排除 creator 后剩 ${activity.earlyBuyers.length} 个付款方，与当前前 20 大持仓求交集` +
+        '（链上只返回前 20），因此只是下限，不是全量。',
     );
   }
 

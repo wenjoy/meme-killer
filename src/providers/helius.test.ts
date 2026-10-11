@@ -360,7 +360,7 @@ test('大额卖单明细：按金额取前 N 笔并保留签名，空/零额条�
       mk(0.108, 'sig-c'),
       mk(1.5, 'sig-d'),
     ],
-    3,
+    { limit: 3 },
   )!;
   assert.deepEqual(
     top.map((s) => s.signature),
@@ -369,4 +369,22 @@ test('大额卖单明细：按金额取前 N 笔并保留签名，空/零额条�
   assert.equal(top[0].sol, 2.028);
   assert.equal(buildLargeSells([]), undefined);
   assert.equal(buildLargeSells([mk(0, 'x')]), undefined);
+});
+
+test('大额卖单要标出「是不是开盘那批人」：窗口内标注序号，creator 单独标', () => {
+  const sells = [
+    { signature: 'sig-dump', sol: 2.028, ts: 1_700_000_000, trader: 'Sniper1111' },
+    { signature: 'sig-dev', sol: 0.5, ts: 1_700_000_000, trader: 'Creator111' },
+    { signature: 'sig-late', sol: 0.3, ts: 1_700_000_000, trader: 'Latecomer1' },
+  ];
+  const top = buildLargeSells(sells, { earlyBuyers: ['Someone1', 'Sniper1111'], creator: 'Creator111' })!;
+  assert.equal(top[0].earlyBuyerIndex, 1, '窗口内第 2 笔买入 → 序号 1（0-based）');
+  assert.equal(top[0].isCreator, undefined);
+  assert.equal(top[1].isCreator, true, '部署者在砸盘要单独标出来');
+  assert.equal(top[2].earlyBuyerIndex, undefined, '不在最早 25 笔里 → 不猜，留空');
+  assert.equal(top[2].isCreator, undefined);
+
+  // 同一地址在窗口里出现多次时，记最早那一次
+  const dup = buildLargeSells([sells[0]], { earlyBuyers: ['Sniper1111', 'Sniper1111'] })!;
+  assert.equal(dup[0].earlyBuyerIndex, 0);
 });

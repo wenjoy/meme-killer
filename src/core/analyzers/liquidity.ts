@@ -15,7 +15,14 @@
  *   同一个事实在两个维度各判一次会重复计分（这里曾有一份永远拿不到值的副本）。
  */
 import { THRESHOLDS, scoreFromFindings } from '../constants';
-import type { DimensionResult, Finding, ScanInput, Severity } from '../types';
+import type {
+  DimensionResult,
+  Finding,
+  LargeSellEvidence,
+  RawHolder,
+  ScanInput,
+  Severity,
+} from '../types';
 
 /** 截断长 base58（地址/签名）：只用于展示，完整值在明细里 */
 function short(v: string, head = 4, tail = 4): string {
@@ -215,6 +222,53 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
   // 最大几笔卖单的链上凭据：签名 + 时间 + 钱包。没有这个，「最大单笔 2.028 SOL」
   // 只是个无法验证的数字；有了它，读者能点到 Solscan 看到是谁什么时候砸的。
   const topSells = volUnit === 'SOL' ? (l.largeSells ?? []) : [];
+  // 身份核对：这些砸盘的钱包是不是开盘那批人？现在还拿着多少？
+  // 「开盘就买的狙击手在出货」与「半路进场的持有人止盈」是两件不同的事，
+  // 只报金额会把两者混为一谈。
+  const holderByAddr = new Map<string, RawHolder>(
+    (data.holders ?? []).map((h): [string, RawHolder] => [h.address, h]),
+  );
+  const enrichedSells: (LargeSellEvidence & { holderPctNow?: number; sniperNow?: boolean })[] =
+    topSells.map((x) => {
+    const h = x.trader ? holderByAddr.get(x.trader) : undefined;
+      return {
+        ...x,
+        ...(h?.pct !== undefined ? { holderPctNow: h.pct } : {}),
+        ...(h?.isSniper !== undefined ? { sniperNow: h.isSniper } : {}),
+      };
+    });
+  const windowTrades = t.sniperWindowTrades;
+  const identityOf = (x: (typeof enrichedSells)[number]): string =>
+    x.isCreator
+      ? '部署者'
+      : x.earlyBuyerIndex !== undefined
+        ? `开盘最早 ${windowTrades} 笔内的买家（第 ${x.earlyBuyerIndex + 1} 笔）`
+        : '';
+  const earlyCount = enrichedSells.filter((x) => x.earlyBuyerIndex !== undefined).length;
+  const creatorCount = enrichedSells.filter((x) => x.isCreator).length;
+  const stillHolding = enrichedSells.filter((x) => x.holderPctNow !== undefined);
+  const identityNote =
+    enrichedSells.length > 0 && l.earlyBuyerWindowKnown === false
+      ? `身份核对（针对最大的 ${enrichedSells.length} 笔卖单）：` +
+        '本次没取到该代币的最早成交，无法判断这些地址是不是开盘就买入的 —— ' +
+        '不要把它读成「不是狙击手」。'
+      : enrichedSells.length
+    ? `身份核对（针对最大的 ${enrichedSells.length} 笔卖单）：` +
+      (creatorCount > 0 ? `${creatorCount} 笔来自部署者；` : '') +
+      (earlyCount > 0
+        ? `${earlyCount} 笔来自开盘最早 ${windowTrades} 笔成交内的地址` +
+          `（${enrichedSells
+            .filter((x) => x.earlyBuyerIndex !== undefined || x.isCreator)
+            .map((x) => `${identityOf(x)} ${x.sol.toFixed(3)} SOL`)
+            .join('、')}）`
+        : `没有一笔来自开盘最早 ${windowTrades} 笔成交内的地址`) +
+      (stillHolding.length > 0
+        ? `；其中 ${stillHolding.length} 个地址当前仍在前 20 大持仓里（最高 ${Math.max(
+            ...stillHolding.map((x) => x.holderPctNow ?? 0),
+          ).toFixed(2)}%）`
+        : '；这些地址都已不在当前前 20 大持仓里') +
+      '。⚠️ 「不在最早窗口内」只代表它不是最早那 25 笔成交的付款方，不等于确定不是早期买家。'
+    : '';
   const sellEvidence = topSells.length
     ? `最大 ${topSells.length} 笔卖单（签名可在 Solscan 核对，完整明细见下方「大额卖单明细」）：` +
       topSells
@@ -226,7 +280,8 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
             `，签名 ${short(x.signature, 6, 6)}`,
         )
         .join('；') +
-      '。'
+      '。' +
+      identityNote
     : '';
 
   // 笔数比与金额比背离：笔数很强，金额却在流出（比例判定，与单位无关）
@@ -278,7 +333,10 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
         ? { sampleWindowMin: Math.max(1, Math.round(audit.windowSec / 60)) }
         : {}),
       // 明细列表交给 UI 渲染成可点击的 Solscan 链接
-      ...(topSells.length > 0 ? { largeSells: topSells } : {}),
+      ...(enrichedSells.length > 0 ? { largeSells: enrichedSells } : {}),
+      ...(enrichedSells.length > 0 && l.earlyBuyerWindowKnown !== undefined
+        ? { earlyBuyerWindowKnown: l.earlyBuyerWindowKnown ? 1 : 0 }
+        : {}),
       ...(sniperPct !== undefined ? { sniperHoldPct: sniperPct } : {}),
       ...(l.holderCount !== undefined ? { holderCount: l.holderCount } : {}),
       ...(l.liquidityUsd !== undefined ? { liquidityUsd: l.liquidityUsd } : {}),

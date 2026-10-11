@@ -41,6 +41,7 @@ import type {
   SocialInfo,
   TokenInfo,
 } from '@/core/types';
+import { THRESHOLDS } from '@/core/constants';
 import { decodeBondingCurve, deriveBondingCurve } from '@/providers/pools';
 
 // ── 环境配置 ────────────────────────────────────────────────────────
@@ -826,12 +827,24 @@ function classifyTx(
  */
 export function buildLargeSells(
   sells: LargeSellEvidence[],
-  limit = 5,
+  opts: { earlyBuyers?: string[]; creator?: string; limit?: number } = {},
 ): LargeSellEvidence[] | undefined {
+  const { earlyBuyers, creator, limit = 5 } = opts;
+  // 同一个地址可能在窗口里出现多次，只记最早那一次
+  const earlyIndex = new Map<string, number>();
+  (earlyBuyers ?? []).forEach((addr, i) => {
+    if (addr && !earlyIndex.has(addr)) earlyIndex.set(addr, i);
+  });
   const top = sells
     .filter((s) => s.signature && s.sol > 0)
     .sort((a, b) => b.sol - a.sol)
-    .slice(0, limit);
+    .slice(0, limit)
+    .map((s) => ({
+      ...s,
+      // 「开盘就买的地址在砸盘」和「半路进场的人止盈」是两件事，必须标出来
+      ...(s.trader && earlyIndex.has(s.trader) ? { earlyBuyerIndex: earlyIndex.get(s.trader)! } : {}),
+      ...(s.trader && creator && s.trader === creator ? { isCreator: true } : {}),
+    }));
   return top.length > 0 ? top : undefined;
 }
 
@@ -932,8 +945,11 @@ const activityCache = new Map<string, { act: TxActivity; createdAtSec?: number }
  *
  * 为什么不用「第一笔」：creator 的创建交易占掉第一笔，
  * 真正的首区块买家在第 2 笔之后；实测取 1 笔会把狙击窗口整个丢掉。
+ *
+ * ⚠️ 数值只在 `THRESHOLDS.liquidity.sniperWindowTrades` 定义一处：大额卖单的
+ * 身份判定与持仓维度的狙击识别必须用同一个窗口，否则同一份数据会出现两种结论。
  */
-const EARLY_TX_LIMIT = 25;
+const EARLY_TX_LIMIT = THRESHOLDS.liquidity.sniperWindowTrades;
 
 /**
  * 用真实成交推导市场指标，补充/替代 DexScreener。
@@ -993,6 +1009,11 @@ export async function fetchMintActivity(
     warnings.push(`拉取最早交易失败：${msg(oldestRes.reason)}（无法确定部署者与发币时间）`);
   }
 
+  // 窗口可用性只看「最早成交这一批有没有真拿到」：拿到了哪怕只有 3 笔也成立
+  // （那 3 笔就是全部历史），拿不到就必须标成未知。
+  const earlyWindowKnown =
+    oldestRes.status === 'fulfilled' && (oldestRes.value?.length ?? 0) > 0;
+
   let origin: FieldOrigin = 'unavailable';
   if (recentRes.status === 'fulfilled') {
     const txs = recentRes.value;
@@ -1006,8 +1027,13 @@ export async function fetchMintActivity(
       liquidity.sellVolumeSol = Math.round(act.sellVolumeSol * 1e4) / 1e4;
       const audit = buildTradeSizeAudit(act);
       if (audit) liquidity.tradeSizeAudit = audit;
-      const largeSells = buildLargeSells(act.sells);
-      if (largeSells) liquidity.largeSells = largeSells;
+      const largeSells = buildLargeSells(act.sells, { earlyBuyers, creator });
+      if (largeSells) {
+        liquidity.largeSells = largeSells;
+        // 最早成交没取到时 earlyBuyers 是空的：此时「不在最早 25 笔内」这个结论
+        // 无凭无据，必须让下游知道窗口不可用，而不是让它默认成「不是狙击手」。
+        liquidity.earlyBuyerWindowKnown = earlyWindowKnown;
+      }
       origin = 'onchain';
     } else {
       warnings.push(
