@@ -17,6 +17,7 @@ import { scan } from '@/core/engine';
 import type {
   DeveloperInfo,
   FieldOrigin,
+  HolderOverviewLazy,
   LiquidityInfo,
   RawHolder,
   ScanInput,
@@ -35,12 +36,23 @@ import {
   rpcUrl,
 } from './helius';
 import { resolveCreator } from './creator';
+import {
+  buildHolderOverview,
+  cacheOwnerList,
+  getHolderAccountsCached,
+  type HolderEnumeration,
+} from './holderList';
 import { resolvePoolAddresses } from './pools';
 import { fetchRugCheck, type RugCheckResult } from './rugcheck';
 
 export interface CollectOptions {
   /** 只做链上采集，跳过 DexScreener（调试用） */
   skipMarket?: boolean;
+  /**
+   * 即使账户数超过自动加载上限也强制拉全量持有人分布。
+   * 用于报告里那个「按需加载」按钮 —— 用户明确要求了，慢也要拉。
+   */
+  forceOverview?: boolean;
 }
 
 /** 合并各 provider 的产出为分析器需要的归一化结构 */
@@ -57,9 +69,28 @@ export function mergeInputs(parts: {
   creator?: string;
   /** 创建交易的付款方，与 creator 不同时才有值 */
   launchWallet?: string;
+  /** 全量持有人枚举结果（扫描时按阈值自动拉；没拉就没有） */
+  holderEnumeration?: HolderEnumeration;
+  /** 没自动加载全量的原因 */
+  holdersOverviewLazy?: HolderOverviewLazy;
+  /** RugCheck 口径的持有人总数，用于总览的口径对照 */
+  reportedHolders?: number;
 }): ScanInput {
-  const { mint, onchain, activity, developer, dex, rug, warnings, origins, creator, launchWallet } =
-    parts;
+  const {
+    mint,
+    onchain,
+    activity,
+    developer,
+    dex,
+    rug,
+    warnings,
+    origins,
+    creator,
+    launchWallet,
+    holderEnumeration,
+    holdersOverviewLazy,
+    reportedHolders,
+  } = parts;
 
   const token = {
     ...onchain.token,
@@ -86,6 +117,40 @@ export function mergeInputs(parts: {
   }
 
   const poolAddresses = [...pools.addresses];
+
+  // ── 全量持有人总览：在拿到池地址与分类结果之后聚合 ──────────────
+  // 注意顺序：池地址要先由 resolvePoolAddresses 定下来，否则池持仓会被
+  // 当成普通大户算进分布里（那正是集中度最大的误报源）。
+  let holdersOverview: ScanInput['holdersOverview'];
+  if (holderEnumeration && holderEnumeration.accounts.length > 0) {
+    const res = buildHolderOverview(
+      holderEnumeration,
+      {
+        decimals: token.decimals ?? 0,
+        supplyUi: onchain.contract?.supply ?? token.supply ?? 0,
+        knownHolders: onchain.holders ?? [],
+        poolAddresses: [...pools.addresses],
+        creator,
+        ...(launchWallet ? { launchWallet } : {}),
+        linkedWallets: developer?.developer?.linkedWallets ?? [],
+      },
+      {
+        ...(reportedHolders !== undefined ? { reportedHolders } : {}),
+      },
+    );
+    holdersOverview = res.overview;
+    // 明细接口翻的是这一份（合并 + 分类后），不重算
+    cacheOwnerList(mint, res.owners, {
+      source: res.overview.source,
+      truncated: res.overview.truncated,
+      accountsTotal: res.overview.accountsTotal,
+      accountsWithBalance: res.overview.accountsWithBalance,
+      ...(res.overview.reportedHolders !== undefined
+        ? { reportedHolders: res.overview.reportedHolders }
+        : {}),
+    });
+  }
+
 
   // 把池地址回填到持仓分类：**owner 或 token account 任一命中即视为池**。
   // ⚠️ token account 这一路是必须的：Raydium v4 这类池把代币放在独立 vault 里，
@@ -188,6 +253,9 @@ export function mergeInputs(parts: {
     liquidity: hasLiquidityMetrics ? liquidity : null,
     holders,
     developer: developer.developer,
+    // 全量持有人总览（没加载时字段不存在 —— 未知不能写成 0）
+    ...(holdersOverview ? { holdersOverview } : {}),
+    ...(holdersOverviewLazy ? { holdersOverviewLazy } : {}),
     // Helius 不提供社交数据，需要第三方服务；留空让维度标记为未采集
     social: null,
     meta: {
@@ -296,6 +364,52 @@ export async function collectAndScan(
     '社交热度数据源未接入（Helius 不提供社交数据，需 X/TG 第三方服务）。该维度标记为未采集，不计入评分。',
   );
 
+  // ── 全量持有人总览：账户数在阈值内就自动拉 ──────────────────────
+  // 实测 9.4k 账户 642ms / 2.2MB；再大就会明显拖慢扫描并放大失败面，
+  // 所以超过阈值只给一个按钮（并在报告里说明「未自动加载」，不是「没有持有人」）。
+  const reportedHolders = rug.liquidity?.holderCount;
+  let holderEnumeration: HolderEnumeration | undefined;
+  let holdersOverviewLazy: ScanInput['holdersOverviewLazy'];
+  const decimals = onchain.token.decimals ?? 0;
+  if (
+    !opts.forceOverview &&
+    reportedHolders !== undefined &&
+    reportedHolders > THRESHOLDS.holders.overviewMaxAccounts
+  ) {
+    holdersOverviewLazy = {
+      reason:
+        `该代币有约 ${reportedHolders.toLocaleString()} 个持仓账户，超过自动加载上限 ` +
+        `${THRESHOLDS.holders.overviewMaxAccounts.toLocaleString()}，本次扫描没有拉全量分布。` +
+        '可以点下方按钮按需加载（会更慢，且可能因 RPC 限制不完整）。',
+      estimatedAccounts: reportedHolders,
+    };
+    warnings.push(
+      `持有人总览未自动加载：约 ${reportedHolders.toLocaleString()} 个账户超过上限 ` +
+        `${THRESHOLDS.holders.overviewMaxAccounts.toLocaleString()}。这不是「没有持有人」，是按需加载。`,
+    );
+  } else {
+    const enumerated = await getHolderAccountsCached(
+      mint,
+      onchain.contract?.tokenProgram,
+      decimals,
+    );
+    for (const w of enumerated.warnings) warnings.push(w);
+    if (enumerated.accounts.length > 0) {
+      holderEnumeration = enumerated;
+      // 口径对照：链上账户 / 有余额账户 / RugCheck 报的持有人数
+      const withBal = enumerated.accounts.filter((a) => a.amount > 0n).length;
+      if (reportedHolders !== undefined) {
+        warnings.push(
+          `「持有人数」有三个口径，差额不做推断：链上 token account ${enumerated.accounts.length} 个` +
+            `（其中有余额 ${withBal} 个、已清空 ${enumerated.accounts.length - withBal} 个）、` +
+            `RugCheck 报 ${reportedHolders.toLocaleString()} 个。`,
+        );
+      }
+    } else {
+      holdersOverviewLazy = { reason: '本次未能枚举全量持仓账户（RPC 与分页兜底都没成功），可手动重试。' };
+    }
+  }
+
   const input = mergeInputs({
     mint,
     onchain,
@@ -307,6 +421,9 @@ export async function collectAndScan(
     origins,
     ...(creator ? { creator } : {}),
     ...(resolved.launchWallet ? { launchWallet: resolved.launchWallet } : {}),
+    ...(holderEnumeration ? { holderEnumeration } : {}),
+    ...(holdersOverviewLazy ? { holdersOverviewLazy } : {}),
+    ...(reportedHolders !== undefined ? { reportedHolders } : {}),
   });
   const report = scan(input);
   report.meta.elapsedMs = Date.now() - started;

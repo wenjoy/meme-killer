@@ -339,6 +339,10 @@ export interface ScanInput {
   holders?: RawHolder[];
   developer?: DeveloperInfo | null;
   social?: SocialInfo | null;
+  /** 全量持有人总览（链上枚举 + 聚合）；没加载时该字段不存在 */
+  holdersOverview?: HolderOverview;
+  /** 本次没自动加载全量的原因（账户数超上限 / 枚举失败） */
+  holdersOverviewLazy?: HolderOverviewLazy;
   /** 数据来源与完整性元信息，UI 必须展示，避免把估算当事实 */
   meta?: ScanMeta;
 }
@@ -387,6 +391,8 @@ export interface DimensionResult {
     | CustodyMetric[]
     | LargeSellEvidence[]
     | HolderRow[]
+    | HolderOverview
+    | HolderOverviewLazy
   >;
   error?: string;
 }
@@ -441,6 +447,86 @@ export interface HolderRow {
   label?: string;
   /** 该仓位是否由程序控制（锁仓/多签/托管），UI 用来标注 */
   custody?: { kind: CustodyKind; label: string };
+  /** 该 owner 名下有几个 token account（同一人多个账户时 > 1） */
+  accounts?: number;
+}
+
+/**
+ * 全量持有人分布的一个分桶（按 owner 合并后的持仓，占总供应量百分比）。
+ * 分桶是对数的 —— 长尾账户数量是万级，线性分桶会全部挤在第一格。
+ */
+export interface HolderBucket {
+  label: string;
+  minPct: number;
+  maxPct?: number;
+  /** 该区间内的持有人数（按地址合并） */
+  owners: number;
+  /** 该区间合计占总供应量百分比 */
+  pct: number;
+}
+
+/**
+ * 累计集中度曲线上的一个点 —— **三个口径必须同时给**，因为同一个「Top10」
+ * 在这个币上同时是 84.68% / 8.20% / 38.22%，取决于分母和是否剔除：
+ *
+ * - `cumPctAll`       含池/销毁/锁仓，分母 = 总供应量
+ * - `cumPctCounted`   剔除池/销毁/锁仓，分母 = 总供应量（这一条与报告里的
+ *                     「Top10 集中度」是同一个数，可以直接对照）
+ * - `cumPctCirculating` 剔除后，分母 = 流通盘（= 总量 − 剔除项）
+ *
+ * 实测 9raUVuze…pump：Top10 = 84.68 / 8.20 / 38.22。
+ * 只给一个数，读者会以为报告自相矛盾；只给两个数，也解释不了第三个。
+ */
+export interface HolderCurvePoint {
+  top: number;
+  cumPctAll: number;
+  cumPctCounted: number;
+  cumPctCirculating: number;
+}
+
+/**
+ * 全量持有人总览（链上枚举 + 聚合，不含逐行明细）。
+ *
+ * 明细（几千到几万行）由 `/api/holders` 分页取，不进报告本体。
+ */
+export interface HolderOverview {
+  /** 数据来源：RPC 全量枚举（快）/ DAS 分页兜底（慢，可能不完整） */
+  source: 'rpc' | 'das';
+  /** 是否因上限没取全 */
+  truncated: boolean;
+  /** 账户口径 */
+  accountsTotal: number;
+  accountsWithBalance: number;
+  /** 地址口径（按 owner 合并 —— 同一人可能有多个账户） */
+  ownersTotal: number;
+  ownersWithBalance: number;
+  /** 枚举到的持仓合计占总供应量百分比（≈100% 才说明枚举完整） */
+  coveredPct: number;
+  /** 池 / 销毁 / 锁仓合计（占总量） */
+  excludedPct: number;
+  circulatingOwners: number;
+  buckets: HolderBucket[];
+  curve: HolderCurvePoint[];
+  /** 按流通盘算：达到 50% / 80% 需要几个持有人 */
+  ownersFor50?: number;
+  ownersFor80?: number;
+  /** 灰尘账户（< overviewDustPct）数量与合计占比 */
+  dustOwners: number;
+  dustPct: number;
+  /** RugCheck 报的持有人总数，用于口径对照 */
+  reportedHolders?: number;
+}
+
+/**
+ * 「本次扫描没有自动加载全量持有人」的状态。
+ *
+ * ⚠️ 刻意与 `HolderOverview` 分成两个类型：没加载就等于**未知**，
+ * 绝不能用一个字段全是 0 的 overview 去表示 —— 那会被渲染成「持有人 0 个」。
+ */
+export interface HolderOverviewLazy {
+  reason: string;
+  /** RugCheck 口径的预估账户数（拿不到就没有） */
+  estimatedAccounts?: number;
 }
 
 export interface CustodyMetric {

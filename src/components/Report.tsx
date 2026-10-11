@@ -1,10 +1,16 @@
 'use client';
 
 import { DIMENSION_ORDER, SEVERITY_ORDER } from '@/core/constants';
+import { useEffect, useMemo, useState } from 'react';
+
+import { THRESHOLDS } from '@/core/constants';
 import type {
   CustodyMetric,
   DimensionResult,
   Finding,
+  HolderCurvePoint,
+  HolderOverview,
+  HolderOverviewLazy,
   HolderRow,
   LargeSellEvidence,
   ScanReport,
@@ -148,7 +154,16 @@ function Provenance({ report }: { report: ScanReport }) {
   );
 }
 
-export function Report({ report }: { report: ScanReport }) {
+export function Report({
+  report,
+  onForceOverview,
+  forcing,
+}: {
+  report: ScanReport;
+  /** 点「按需加载全量分布」时重新扫描（带 forceOverview） */
+  onForceOverview?: () => void;
+  forcing?: boolean;
+}) {
   const tone = TONE[report.band.tone];
   const scores: Record<string, number> = {};
   const missing: Record<string, boolean> = {};
@@ -420,7 +435,9 @@ export function Report({ report }: { report: ScanReport }) {
       </section>
 
       <CustodySection report={report} />
+      <HoldersOverviewSection report={report} onForceOverview={onForceOverview} forcing={forcing} />
       <TopHoldersSection report={report} />
+      <AllHoldersSection report={report} />
 
       <LargeSellsSection report={report} />
 
@@ -749,6 +766,454 @@ function TopHoldersSection({ report }: { report: ScanReport }) {
         不代表只有 20 个持有人。「计入集中度 = 否」的三类（池、销毁、锁仓）已从 Top10 与巨鲸判断中剔除，
         托管（多签）不剔除 —— 它可以随时签名转出。
       </p>
+    </section>
+  );
+}
+
+/**
+ * 全量持有人分布总览。
+ *
+ * 用户要求：「所有持币帐户的总览」——账户数是几千到几万，逐行列没有意义，
+ * 所以这里给的是**结构**：分桶 + 累计集中度曲线 + 几个能直接下判断的标量。
+ * 逐行明细在下面的 AllHoldersSection（分页、按需加载）。
+ *
+ * ⚠️ 两条曲线必须同时画：「含池/销毁/锁仓」与「剔除后」。
+ * 实测同一个币前者 Top10 = 84.68%、后者 = 8.2% —— 只画一条，读者会以为
+ * 这一页和上面的「Top10 集中度」自相矛盾。
+ */
+function HoldersOverviewSection({
+  report,
+  onForceOverview,
+  forcing,
+}: {
+  report: ScanReport;
+  onForceOverview?: () => void;
+  forcing?: boolean;
+}) {
+  const m = report.dimensions.holders?.metrics;
+  const overview = (m?.overview ?? undefined) as HolderOverview | undefined;
+  const lazy = (m?.overviewLazy ?? undefined) as HolderOverviewLazy | undefined;
+
+  if (!overview) {
+    if (!lazy) return null;
+    return (
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold text-ink-300">全量持有人分布</h2>
+        <div className="rounded-xl border border-warn/40 bg-warn/5 p-3 text-xs text-ink-300">
+          <p className="leading-relaxed">{lazy.reason}</p>
+          <p className="mt-2 leading-relaxed text-ink-400">
+            ⚠️ 这不等于「没有持有人」——只是没在这个代币上自动拉全量分布。
+          </p>
+          {onForceOverview && (
+            <button
+              type="button"
+              disabled={forcing}
+              onClick={onForceOverview}
+              className="mt-3 rounded-lg border border-accent/50 bg-accent/10 px-3 py-1.5 text-xs text-ink-100 transition hover:bg-accent/20 disabled:opacity-50"
+            >
+              {forcing ? '正在重新扫描并枚举全量持仓…' : '按需加载全量分布（会重新扫描一次，较慢）'}
+            </button>
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  const emptyAccounts = overview.accountsTotal - overview.accountsWithBalance;
+  const twoCaliber =
+    overview.reportedHolders !== undefined && overview.reportedHolders !== overview.accountsTotal;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-ink-300">全量持有人分布（链上枚举）</h2>
+        <span className="font-mono text-[10px] text-ink-500">
+          {overview.source === 'rpc' ? 'RPC 全量枚举' : 'DAS 分页兜底（较慢）'}
+          {overview.truncated && ' · ⚠️ 未取全'}
+        </span>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat label="持有人（按地址合并）" value={overview.ownersWithBalance.toLocaleString()} sub={`${overview.accountsWithBalance.toLocaleString()} 个账户`} />
+        <Stat label="持仓账户总数" value={overview.accountsTotal.toLocaleString()} sub={emptyAccounts > 0 ? `含已清空 ${emptyAccounts.toLocaleString()} 个` : '无空账户'} />
+        <Stat
+          label="达到 50% / 80% 需要"
+          value={`${overview.ownersFor50 ?? '—'} / ${overview.ownersFor80 ?? '—'}`}
+          sub="按剔除后的流通盘算"
+        />
+        <Stat
+          label={`灰尘持有人（< ${THRESHOLDS.holders.overviewDustPct}%）`}
+          value={overview.dustOwners.toLocaleString()}
+          sub={`合计占 ${num(overview.dustPct)}%`}
+        />
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-ink-700">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-ink-900/60 text-ink-400">
+            <tr>
+              <th className="px-3 py-2 font-medium">持仓区间（占总供应）</th>
+              <th className="px-3 py-2 text-right font-medium">持有人数</th>
+              <th className="px-3 py-2 text-right font-medium">合计占比</th>
+              <th className="px-3 py-2 font-medium">分布</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-800">
+            {overview.buckets.map((b) => {
+              const share = b.owners / Math.max(1, overview.ownersWithBalance);
+              return (
+                <tr key={b.label} className="bg-ink-950/40">
+                  <td className="px-3 py-2 font-mono text-ink-300">{b.label}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-200">{b.owners.toLocaleString()}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-200">{num(b.pct)}%</td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-24 overflow-hidden rounded bg-ink-800">
+                        <div className="h-full bg-accent" style={{ width: `${Math.min(100, share * 100).toFixed(2)}%` }} />
+                      </div>
+                      <span className="font-mono text-[10px] text-ink-500">{(share * 100).toFixed(1)}% 的人</span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {overview.curve.length >= 2 && <ConcentrationCurve points={overview.curve} />}
+
+      <p className="text-[11px] leading-relaxed text-ink-400">
+        口径说明：这里按 **owner 合并**统计（同一地址的多个 token account 算一个人），
+        账户数 {overview.accountsTotal.toLocaleString()} 个、有余额 {overview.accountsWithBalance.toLocaleString()} 个
+        {overview.reportedHolders !== undefined && <>、RugCheck 报 {overview.reportedHolders.toLocaleString()} 个持有人</>}
+        {twoCaliber && <> —— <span className="text-warn">三个口径对不上，差额不做推断</span></>}。
+        池 / 销毁 / 锁仓合计剔除 {num(overview.excludedPct)}%；更深的持仓只能按地址归类，
+        托管（多签/锁仓）判定只覆盖前 20 名（需要逐账户反查控制程序）。
+        枚举到的持仓合计占总量 {num(overview.coveredPct)}%
+        {overview.coveredPct < 99 && '（不到 100% 说明有持仓没被枚举到，分布不完整）'}。
+      </p>
+    </section>
+  );
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-ink-700 bg-ink-900/60 p-3">
+      <div className="text-[10px] text-ink-400">{label}</div>
+      <div className="mt-1 font-mono text-lg font-semibold text-ink-100">{value}</div>
+      {sub && <div className="mt-0.5 text-[10px] text-ink-500">{sub}</div>}
+    </div>
+  );
+}
+
+/** 累计集中度曲线：两条口径并排画，读者一眼能看出差在哪 */
+function ConcentrationCurve({ points }: { points: HolderCurvePoint[] }) {
+  const W = 560;
+  const H = 170;
+  const PAD = 30;
+  const x = (i: number) => PAD + (i * (W - 2 * PAD)) / Math.max(1, points.length - 1);
+  const y = (pct: number) => H - PAD - (Math.min(100, Math.max(0, pct)) / 100) * (H - 2 * PAD);
+  const line = (get: (p: HolderCurvePoint) => number) =>
+    points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(get(p)).toFixed(1)}`).join(' ');
+
+  return (
+    <div className="rounded-xl border border-ink-700 bg-ink-900/40 p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-[10px] text-ink-400">
+        <span className="font-medium text-ink-300">累计集中度曲线</span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-1.5 w-4 rounded bg-warn" /> 含池 / 销毁 / 锁仓（占总量）
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-1.5 w-4 rounded bg-safe" /> 剔除池/销毁/锁仓后（同用总量做分母）
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="累计集中度曲线">
+        {[0, 25, 50, 75, 100].map((g) => (
+          <g key={g}>
+            <line x1={PAD} x2={W - PAD} y1={y(g)} y2={y(g)} stroke="var(--color-ink-700)" strokeWidth="1" strokeDasharray={g === 0 ? '' : '3 3'} />
+            <text x={PAD - 4} y={y(g) + 3} textAnchor="end" fontSize="8" fill="var(--color-ink-500)">{g}%</text>
+          </g>
+        ))}
+        <path d={line((p) => p.cumPctAll)} fill="none" stroke="var(--color-warn)" strokeWidth="2" />
+        <path d={line((p) => p.cumPctCirculating)} fill="none" stroke="var(--color-safe)" strokeWidth="2" />
+        {points.map((p, i) => (
+          <g key={p.top}>
+            <circle cx={x(i)} cy={y(p.cumPctCounted)} r="2.5" fill="var(--color-safe)" />
+            <text x={x(i)} y={H - PAD + 12} textAnchor="middle" fontSize="8" fill="var(--color-ink-500)">
+              {p.top >= 1000 ? `${p.top / 1000}k` : p.top}
+            </text>
+          </g>
+        ))}
+      </svg>
+      <div className="mt-2 overflow-hidden rounded-lg border border-ink-800">
+        <table className="w-full text-left text-[10px]">
+          <thead className="bg-ink-900/60 text-ink-400">
+            <tr>
+              <th className="px-2 py-1.5 font-medium">前 N 名</th>
+              <th className="px-2 py-1.5 text-right font-medium text-warn">含池/销毁/锁仓<br />（占总供应）</th>
+              <th className="px-2 py-1.5 text-right font-medium text-safe">剔除后<br />（占总供应）</th>
+              <th className="px-2 py-1.5 text-right font-medium">剔除后<br />（占流通盘）</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-800">
+            {points.map((p) => (
+              <tr key={p.top} className="bg-ink-950/40">
+                <td className="px-2 py-1.5 font-mono text-ink-400">Top{p.top}</td>
+                <td className="px-2 py-1.5 text-right font-mono text-warn">{num(p.cumPctAll)}%</td>
+                <td className="px-2 py-1.5 text-right font-mono text-safe">{num(p.cumPctCounted)}%</td>
+                <td className="px-2 py-1.5 text-right font-mono text-ink-300">{num(p.cumPctCirculating)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-1 text-[10px] leading-relaxed text-ink-500">
+        同一个 Top10 出现三个数只是因为**分母不同**：「剔除后占总供应」这一列与上面「持币集中度」里的
+        Top10 集中度是同一个数；「占流通盘」是把分母换成（总量 − 池/销毁/锁仓）后的说法。
+        额外面孔：最外层那条线含锁仓，所以看着很吓人 —— 那部分卖不掉。
+      </p>
+    </div>
+  );
+}
+
+/**
+ * 全量持有人明细（分页 / 搜索 / 分类筛选 / CSV 导出 / 含空账户切换）。
+ *
+ * 几千到几万行不可能一次渲染完，所以：
+ * - 页面不自动请求，用户点「加载全部持有人」才拉第一页（避免每次扫描都拖着大请求）；
+ * - 分页与筛选都在服务端做，浏览器一次只拿一页；
+ * - CSV 由服务端生成（当前筛选下的**全量**行，不是当前页）。
+ */
+function AllHoldersSection({ report }: { report: ScanReport }) {
+  const mint = report.token.mint;
+  const m = report.dimensions.holders?.metrics;
+  const overview = (m?.overview ?? undefined) as HolderOverview | undefined;
+
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [q, setQ] = useState('');
+  const [kinds, setKinds] = useState<string[]>([]);
+  const [includeEmpty, setIncludeEmpty] = useState(false);
+  const [rows, setRows] = useState<HolderRow[]>([]);
+  const [meta, setMeta] = useState<{ filtered: number; totalOwners: number; pageSize: number; source: string; truncated: boolean } | undefined>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const query = useMemo(() => {
+    const p = new URLSearchParams({ mint, page: String(page), pageSize: String(pageSize) });
+    if (q.trim()) p.set('q', q.trim());
+    if (kinds.length > 0) p.set('kind', kinds.join(','));
+    if (includeEmpty) p.set('includeEmpty', '1');
+    return p.toString();
+  }, [mint, page, pageSize, q, kinds, includeEmpty]);
+
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      fetch(`/api/holders?${query}`)
+        .then(async (res) => {
+          const j = await res.json();
+          if (!res.ok) throw new Error(j?.error ?? `加载失败（HTTP ${res.status}）`);
+          if (!alive) return;
+          setRows(j.rows as HolderRow[]);
+          setMeta(j.meta);
+        })
+        .catch((e: unknown) => {
+          if (alive) setError(e instanceof Error ? e.message : String(e));
+        })
+        .finally(() => {
+          if (alive) setLoading(false);
+        });
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [open, query]);
+
+  if (!overview) return null;
+
+  const KIND_LABEL: Record<string, string> = {
+    pool: '池',
+    burn: '销毁',
+    timelock: '锁仓',
+    custody: '托管',
+    dev: 'creator',
+    related: '关联',
+    sniper: '狙击',
+    retail: '散户',
+  };
+  const totalPages = meta ? Math.max(1, Math.ceil(meta.filtered / meta.pageSize)) : 1;
+  const csvHref = `/api/holders?${query}&format=csv`;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-ink-300">全部持有人明细</h2>
+        {!open && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="rounded-lg border border-accent/50 bg-accent/10 px-3 py-1.5 text-xs text-ink-100 transition hover:bg-accent/20"
+          >
+            加载全部持有人（{overview.accountsTotal.toLocaleString()} 个账户 / {overview.ownersWithBalance.toLocaleString()} 个地址）
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <input
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setPage(1);
+              }}
+              placeholder="搜索地址前缀…"
+              className="w-56 rounded-lg border border-ink-600 bg-ink-950 px-2.5 py-1.5 font-mono text-[11px] text-ink-200 outline-none placeholder:text-ink-600 focus:border-accent/60"
+            />
+            <div className="flex flex-wrap items-center gap-1">
+              {Object.entries(KIND_LABEL).map(([k, label]) => {
+                const on = kinds.includes(k);
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => {
+                      setKinds((prev) => (on ? prev.filter((x) => x !== k) : [...prev, k]));
+                      setPage(1);
+                    }}
+                    className={`rounded-md border px-2 py-1 text-[10px] transition ${
+                      on ? 'border-accent/60 bg-accent/15 text-ink-100' : 'border-ink-700 text-ink-400 hover:text-ink-200'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <label className="flex items-center gap-1 text-[10px] text-ink-400">
+              <input
+                type="checkbox"
+                checked={includeEmpty}
+                onChange={(e) => {
+                  setIncludeEmpty(e.target.checked);
+                  setPage(1);
+                }}
+              />
+              含已清空账户
+            </label>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setPage(1);
+              }}
+              className="rounded-lg border border-ink-600 bg-ink-950 px-2 py-1.5 text-[11px] text-ink-200 outline-none"
+            >
+              {[20, 50, 100, 200].map((n) => (
+                <option key={n} value={n}>
+                  每页 {n}
+                </option>
+              ))}
+            </select>
+            <a
+              href={csvHref}
+              className="rounded-lg border border-ink-600 px-2.5 py-1.5 text-[11px] text-ink-300 transition hover:text-ink-100"
+            >
+              ← 导出 CSV（当前筛选）
+            </a>
+          </div>
+
+          {error && (
+            <div className="rounded-xl border border-warn/40 bg-warn/5 p-3 text-xs text-ink-300">{error}</div>
+          )}
+
+          <div className="overflow-hidden rounded-xl border border-ink-700">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-ink-900/60 text-ink-400">
+                <tr>
+                  <th className="px-2 py-2 font-medium">#</th>
+                  <th className="px-3 py-2 font-medium">地址</th>
+                  <th className="px-3 py-2 text-right font-medium">数量</th>
+                  <th className="px-3 py-2 text-right font-medium">占总供应</th>
+                  <th className="px-3 py-2 font-medium">分类</th>
+                  <th className="px-3 py-2 font-medium">计入集中度</th>
+                  <th className="px-3 py-2 text-right font-medium">账户数</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-800">
+                {rows.map((h, i) => (
+                  <tr key={h.address} className={h.counted ? 'bg-ink-950/40' : 'bg-ink-900/30 text-ink-400'}>
+                    <td className="px-2 py-2 font-mono text-ink-500">{(page - 1) * pageSize + i + 1}</td>
+                    <td className="px-3 py-2 font-mono">
+                      <a
+                        href={`https://solscan.io/account/${h.address}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-ink-200 underline decoration-ink-700 hover:text-safe"
+                        title={h.address}
+                      >
+                        {shortAddr(h.address)}
+                      </a>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-ink-300">{num(h.amount)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-ink-200">{num(h.pct)}%</td>
+                    <td className="px-3 py-2">
+                      <span className={h.kind === 'dev' ? 'text-danger' : h.kind === 'related' || h.kind === 'sniper' ? 'text-warn' : h.counted ? 'text-ink-300' : 'text-ink-400'}>
+                        {KIND_LABEL[h.kind] ?? h.kind}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">{h.counted ? '是' : <span className="text-ink-500">否</span>}</td>
+                    <td className="px-3 py-2 text-right font-mono text-ink-400">{h.accounts ?? 1}</td>
+                  </tr>
+                ))}
+                {rows.length === 0 && !loading && (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-6 text-center text-ink-500">
+                      没有符合条件的记录
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-ink-400">
+            <span className="font-mono">
+              {loading ? '加载中…' : meta ? `共 ${meta.filtered.toLocaleString()} 行（全量 ${meta.totalOwners.toLocaleString()} 个地址）` : ''}
+              {meta?.truncated && ' · ⚠️ 数据未取全'}
+            </span>
+            <span className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={page <= 1 || loading}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="rounded-md border border-ink-700 px-2 py-1 transition hover:text-ink-100 disabled:opacity-40"
+              >
+                上一页
+              </button>
+              <span className="font-mono">
+                {page} / {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={page >= totalPages || loading}
+                onClick={() => setPage((p) => p + 1)}
+                className="rounded-md border border-ink-700 px-2 py-1 transition hover:text-ink-100 disabled:opacity-40"
+              >
+                下一页
+              </button>
+            </span>
+          </div>
+        </>
+      )}
     </section>
   );
 }

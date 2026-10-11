@@ -19,7 +19,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  let body: { mint?: unknown };
+  let body: { mint?: unknown; forceOverview?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -32,7 +32,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const report = await collectAndScan(mint);
+    // forceOverview：用户点了「按需加载全量分布」，超过自动上限也要拉
+    const report = await collectAndScan(mint, { forceOverview: body.forceOverview === true });
     return NextResponse.json(report);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

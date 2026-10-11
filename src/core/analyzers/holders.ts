@@ -17,6 +17,8 @@ import type {
   CustodyMetric,
   DimensionResult,
   Finding,
+  HolderOverview,
+  HolderOverviewLazy,
   HolderRow,
   RawHolder,
   ScanInput,
@@ -316,6 +318,9 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       byKind,
       custody: custodyList,
       topHolders,
+      // 全量持有人总览（由 provider 层枚举、mergeInputs 聚合）
+      ...(data.holdersOverview ? { overview: data.holdersOverview } : {}),
+      ...(data.holdersOverviewLazy ? { overviewLazy: data.holdersOverviewLazy } : {}),
       timelockPct,
       otherCustodyPct,
     },

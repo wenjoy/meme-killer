@@ -25,7 +25,7 @@ export default function Home() {
       .catch(() => setCap(null));
   }, []);
 
-  const run = useCallback(async (address: string) => {
+  const run = useCallback(async (address: string, opts?: { forceOverview?: boolean }) => {
     setPending(true);
     setError(null);
     setReport(null);
@@ -33,7 +33,7 @@ export default function Home() {
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mint: address }),
+        body: JSON.stringify({ mint: address, ...(opts?.forceOverview ? { forceOverview: true } : {}) }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? `请求失败（${res.status}）`);
@@ -130,7 +130,11 @@ export default function Home() {
 
       {report && (
         <div className="mt-6">
-          <Report report={report} />
+          <Report
+            report={report}
+            onForceOverview={() => void run(report.token.mint, { forceOverview: true })}
+            forcing={pending}
+          />
         </div>
       )}
 

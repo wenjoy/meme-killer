@@ -64,7 +64,7 @@ export function hasEnhancedApi(): boolean {
   return heliusApiKey() !== null;
 }
 
-const RPC_TIMEOUT_MS = 15_000;
+export const RPC_TIMEOUT_MS = 15_000;
 const REST_TIMEOUT_MS = 15_000;
 
 /**
@@ -73,7 +73,7 @@ const REST_TIMEOUT_MS = 15_000;
  * ⚠️ 不加超时会毁掉体验：RPC 不可达时请求会一直挂着，
  * 叠加重试后单次扫描能拖到 65 秒。宁可快速失败并如实报告「数据不足」。
  */
-function timedFetch(timeoutMs: number): typeof fetch {
+export function timedFetch(timeoutMs: number): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
