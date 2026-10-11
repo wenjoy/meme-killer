@@ -56,6 +56,8 @@ export interface RawHolder {
   isSniper?: boolean;
   /** 辅助匹配用的标签，例如 "Raydium AMM Pool" */
   label?: string;
+  /** 标签的字典 key（`pieces.poolLabels.*`）；过渡期与 label 并存 */
+  labelKey?: string;
   /** 该持仓的 token account（用于反查控制程序） */
   tokenAccount?: string;
   /** 若该仓位由程序控制（锁仓/多签/托管），记录控制方 */
@@ -365,9 +367,27 @@ export interface ScanMeta {
   /** 各字段组来源，UI 据此标注"推算/缺失" */
   origins: Record<string, FieldOrigin>;
   /** 采集过程中的告警（限流、字段缺失等），必须显式暴露 */
-  warnings: string[];
+  warnings: Warning[];
   /** 实际耗时 */
   elapsedMs?: number;
+}
+
+/**
+ * 采集告警。
+ *
+ * 与 `Finding` 同一套国际化约定：`key` 是字典 key（`warnings.*`），
+ * `params` 是插值参数，`text` 是**过渡期中文回退**（查不到译文时用它）。
+ *
+ * 为什么 `text` 必填而不是可选：告警是「数据不完整」的显式证据，
+ * 宁可显示中文也不能消失 —— 漏掉一条告警会让用户以为数据是全的。
+ */
+export interface Warning {
+  /** 字典 key，形如 `warnings.helius.ammPools` */
+  key: string;
+  /** 插值参数 */
+  params?: Record<string, string | number>;
+  /** 中文原文（过渡期回退） */
+  text: string;
 }
 
 /** 单条发现项 */
@@ -473,6 +493,8 @@ export interface HolderRow {
   counted: boolean;
   /** 标签，例如「Raydium AMM Pool」「Jupiter Lock」 */
   label?: string;
+  /** 标签的字典 key（`pieces.poolLabels.*`）；过渡期与 label 并存 */
+  labelKey?: string;
   /** 该仓位是否由程序控制（锁仓/多签/托管），UI 用来标注 */
   custody?: { kind: CustodyKind; label: string; labelKey?: string };
   /** 该 owner 名下有几个 token account（同一人多个账户时 > 1） */
@@ -778,7 +800,10 @@ export interface SellPressureInfo {
   mintedUnsoldTokens: number;
   /** 派发中的钱包数（卖了一半左右） */
   distributingWallets: number;
+  /** 中文口径说明整句（过渡期回退，见 windowNoteParts） */
   windowNote: string;
+  /** windowNote 的结构化版本：数字交给渲染层按语言组句 */
+  windowNoteParts: { deepWallets: number; paired: number; total: number };
 }
 
 export interface CustodyMetric {

@@ -378,17 +378,11 @@ export function holderKindLabel(kind: string): string {
  * 每个 id 都用 Helius 交易的 `source` 字段独立核对过，不是凭记忆写的：
  *   PUMP_AMM / PUMP_FUN / METEORA / ORCA 等。
  */
-export const AMM_PROGRAMS: Record<string, string> = {
-  // pump.fun 联合曲线
-  '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P': 'pump.fun 联合曲线',
-  // PumpSwap（pump.fun 的 AMM）
-  pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA: 'PumpSwap 池',
-  // Meteora DLMM
-  LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: 'Meteora DLMM 池',
-  // Raydium AMM v4
-  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'Raydium AMM v4 池',
-  // Raydium CPMM
-  CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C: 'Raydium CPMM 池',
-  // Orca Whirlpool
-  whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc: 'Orca Whirlpool 池',
+export const AMM_PROGRAMS: Record<string, { label: string; labelKey: string }> = {
+  '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P': { label: 'pump.fun 联合曲线', labelKey: 'pumpfunCurve' },
+  pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA: { label: 'PumpSwap 池', labelKey: 'pumpswap' },
+  LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: { label: 'Meteora DLMM 池', labelKey: 'meteoraDlmm' },
+  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': { label: 'Raydium AMM v4 池', labelKey: 'raydiumV4' },
+  CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C: { label: 'Raydium CPMM 池', labelKey: 'raydiumCpmm' },
+  whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc: { label: 'Orca Whirlpool 池', labelKey: 'orcaWhirlpool' },
 };

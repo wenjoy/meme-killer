@@ -6,6 +6,8 @@
  * 键名用点分层级，与 Finding 的 ID 一一对应（`holders.top10Danger` 等）。
  */
 import { findingsZh } from './findings.zh';
+import { piecesZh } from './pieces.zh';
+import { warningsZh } from './warnings.zh';
 
 export const zh = {
   app: {
@@ -62,6 +64,7 @@ export const zh = {
   },
 
   radar: {
+    noData: '无数据',
     note: '半径越大风险越高 · 灰色「无数据」表示该维度未采集',
   },
 
@@ -123,7 +126,14 @@ export const zh = {
       dataIncomplete: '⚠️ 数据未取全',
       dimFailed: '执行失败',
       loadFailed: '加载失败（HTTP {status}）',
+      // long = 表格/说明里用的完整名；short = 窄列里用的缩写。
+      // ⚠️ 这两个必须与 constants.HOLDER_KIND_LABELS 的语义一一对应
+      // （那边是中文基准，这里是展示层，改一边要想想另一边）。
       holderKinds: {
+        // 长名直接是字符串：t('report.common.holderKinds.pool')
+        // 短名在子对象里：  t('report.common.holderKinds.pool.short')
+        // ⚠️ 短名不能再写成 'short.pool' 或 'pool.short' 这种扁平带点 key ——
+        // lookup 按 `.` 分层，那个写法查不到，界面上会直接显示出这串 key。
         pool: '流动性池',
         burn: '销毁地址',
         timelock: '时间锁仓',
@@ -132,6 +142,16 @@ export const zh = {
         related: '与部署者关联',
         sniper: '狙击仓位',
         retail: '散户',
+        short: {
+          pool: '池',
+          burn: '销毁',
+          timelock: '锁仓',
+          custody: '托管',
+          dev: 'creator',
+          related: '关联',
+          sniper: '狙击',
+          retail: '散户',
+        },
       },
       pnlBuckets: {
         hugeProfit: '浮盈 > 200%（随时获利了结）',
@@ -405,6 +425,8 @@ export const zh = {
 
   /** 分析器结论：key = `<id>` 与 `<id>.detail`，与 Finding id 一一对应 */
   findings: findingsZh,
+  pieces: piecesZh,
+  warnings: warningsZh,
 };
 
 /**

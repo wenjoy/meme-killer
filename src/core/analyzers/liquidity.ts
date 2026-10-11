@@ -193,6 +193,36 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
             '。'
           : '')
       : '';
+  /**
+   * sizeEvidence 的结构化版本。
+   *
+   * `sizeEvidence`（上一行）是**中文整句**，作为过渡期回退保留；
+   * 这里给出数字与可选字段，由 `src/i18n/finding.ts` 按当前语言组装。
+   * 两者必须同源 —— 都是从这里上面那几个数字算出来的。
+   */
+  const sizeParts =
+    audit && avgBuySol !== undefined && avgSellSol !== undefined && volUnit === 'SOL'
+      ? JSON.stringify({
+          trades: audit.trades,
+          ...(audit.windowSec !== undefined ? { windowSec: audit.windowSec } : {}),
+          buyCount,
+          buyVol: buyVol.toFixed(3),
+          avgBuy: avgBuySol.toFixed(4),
+          medianBuy: audit.buyMedianSol.toFixed(4),
+          sellCount,
+          sellVol: sellVol.toFixed(3),
+          avgSell: avgSellSol.toFixed(4),
+          medianSell: audit.sellMedianSol.toFixed(4),
+          sellRatio: (avgSellSol / Math.max(avgBuySol, 1e-9)).toFixed(1),
+          ...(audit.sellMaxSol > 0 ? { maxSellSol: audit.sellMaxSol } : {}),
+          ...(audit.sellMaxSol > 0 && audit.largestSellSharePct !== undefined
+            ? { largestSharePct: audit.largestSellSharePct.toFixed(1) }
+            : {}),
+          ...(audit.sellMaxSol > 0 && audit.top5SellSharePct !== undefined
+            ? { top5Pct: audit.top5SellSharePct.toFixed(1) }
+            : {}),
+        })
+      : '';
 
   if (totalVol > 0) {
     const sellShare = (sellVol / totalVol) * 100;
@@ -226,6 +256,7 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
             ? { netInflowSol: netInflow.toFixed(2) }
             : { volumeUnit: volUnit }),
           ...(sizeEvidence ? { sizeEvidence } : {}),
+          ...(sizeParts ? { sizeParts } : {}),
         },
       );
     } else if (netInflow !== undefined && netInflow > 0 && countShare >= 5) {
@@ -334,6 +365,48 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
       '。' +
       identityNote
     : '';
+  /**
+   * sellEvidence 的结构化版本（含身份核对段）。
+   *
+   * 与上面那段中文整句**同源**。之所以要多这一份，是因为整句里混了
+   * 「金额、时间、地址」与「中文连接词、中文分支判断」——
+   * 英文界面拿到整句只能整段显示中文。
+   * 这里只输出数字/地址/分支枚举，措辞交给 `pieces.liquidity.*`。
+   */
+  const sellParts = topSells.length
+    ? JSON.stringify({
+        rows: topSells.slice(0, 3).map((x) => ({
+          sol: x.sol.toFixed(3),
+          time: utcTime(x.ts),
+          ...(x.trader ? { trader: short(x.trader) } : {}),
+          signature: short(x.signature, 6, 6),
+        })),
+        identity:
+          enrichedSells.length > 0 && l.earlyBuyerWindowKnown === false
+            ? { kind: 'noWindow' }
+            : {
+                kind: 'known',
+                count: enrichedSells.length,
+                windowTrades,
+                creatorCount,
+                earlyCount,
+                detail: enrichedSells
+                  .filter((x) => x.earlyBuyerIndex !== undefined || x.isCreator)
+                  .map((x) => ({
+                    identityKind: x.isCreator ? ('creator' as const) : ('early' as const),
+                    ...(x.earlyBuyerIndex !== undefined ? { index: x.earlyBuyerIndex } : {}),
+                    sol: x.sol.toFixed(3),
+                  })),
+                stillHolding:
+                  stillHolding.length > 0
+                    ? {
+                        count: stillHolding.length,
+                        maxPct: Math.max(...stillHolding.map((x) => x.holderPctNow ?? 0)).toFixed(2),
+                      }
+                    : null,
+              },
+      })
+    : '';
 
   // 笔数比与金额比背离：笔数很强，金额却在流出（比例判定，与单位无关）
   if (sellCount > 0 && totalVol > 0) {
@@ -357,8 +430,10 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
           countRatio: countRatio.toFixed(1),
           volRatioPct: (volRatio * 100).toFixed(0),
           ...(sizeEvidence ? { sizeEvidence } : {}),
+          ...(sizeParts ? { sizeParts } : {}),
           ...(unitNote ? { volumeUnit: volUnit } : {}),
           ...(sellEvidence ? { sellEvidence } : {}),
+          ...(sellParts ? { sellParts } : {}),
         },
       );
     }

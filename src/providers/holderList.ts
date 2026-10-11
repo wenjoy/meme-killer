@@ -15,6 +15,8 @@
  * 实测同一个币：9,447 / 5,566 / 9,456 —— 差在「卖光后没关闭的空账户」算不算持有人。
  */
 import { Connection, PublicKey } from '@solana/web3.js';
+import type { Warning } from '../core/types';
+import { warn } from '../core/warning';
 
 import { BURN_ADDRESSES, THRESHOLDS } from '@/core/constants';
 import { classifyHolder, isExcludedKind, type HolderKind } from '@/core/analyzers/holders';
@@ -52,7 +54,7 @@ export interface HolderEnumeration {
   source: 'rpc' | 'das';
   /** 是否因为上限而没取全 */
   truncated: boolean;
-  warnings: string[];
+  warnings: Warning[];
 }
 
 interface DasTokenAccount {
@@ -124,7 +126,7 @@ export async function fetchHolderAccounts(
   mint: string,
   tokenProgram?: string,
 ): Promise<HolderEnumeration> {
-  const warnings: string[] = [];
+  const warnings: Warning[] = [];
   const programs = tokenProgram
     ? [tokenProgram]
     : [TOKEN_PROGRAM, TOKEN_2022_PROGRAM];
@@ -138,8 +140,12 @@ export async function fetchHolderAccounts(
       }
     } catch (e) {
       warnings.push(
-        `RPC 全量枚举失败（${program.slice(0, 8)}…）：${e instanceof Error ? e.message : String(e)}。` +
-          '已降级为 DAS 分页，结果可能不完整。',
+        warn(
+          'warnings.holderList.rpcFailed',
+          { program: program.slice(0, 8), reason: e instanceof Error ? e.message : String(e) },
+          `RPC 全量枚举失败（${program.slice(0, 8)}…）：${e instanceof Error ? e.message : String(e)}。` +
+            '已降级为 DAS 分页，结果可能不完整。',
+        ),
       );
     }
   }
@@ -151,13 +157,24 @@ export async function fetchHolderAccounts(
         accounts: [],
         source: 'das',
         truncated: false,
-        warnings: [...warnings, '全量枚举没有得到任何 token account（该 mint 可能没有持有人）。'],
+        warnings: [
+          ...warnings,
+          warn(
+            'warnings.holderList.empty',
+            undefined,
+            '全量枚举没有得到任何 token account（该 mint 可能没有持有人）。',
+          ),
+        ],
       };
     }
     if (truncated) {
       warnings.push(
-        `DAS 分页达到上限（${MAX_DAS_PAGES} 页 × 1000），只取到前 ${accounts.length} 个账户，` +
-          '分布图与持有人数**不完整**，不要当作全量。',
+        warn(
+          'warnings.holderList.dasCapped',
+          { pages: MAX_DAS_PAGES, n: accounts.length },
+          `DAS 分页达到上限（${MAX_DAS_PAGES} 页 × 1000），只取到前 ${accounts.length} 个账户，` +
+            '分布图与持有人数**不完整**，不要当作全量。',
+        ),
       );
     }
     return { accounts, source: 'das', truncated, warnings };
@@ -168,7 +185,11 @@ export async function fetchHolderAccounts(
       truncated: false,
       warnings: [
         ...warnings,
-        `全量持有人枚举失败：${e instanceof Error ? e.message : String(e)}。本项无法计算。`,
+        warn(
+          'warnings.holderList.enumerationFailed',
+          { reason: e instanceof Error ? e.message : String(e) },
+          `全量持有人枚举失败：${e instanceof Error ? e.message : String(e)}。本项无法计算。`,
+        ),
       ],
     };
   }

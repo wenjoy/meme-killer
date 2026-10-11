@@ -106,7 +106,7 @@ test('完全推导不出池时必须告警（否则用户不知道 Top10 偏高�
   assert.equal(r.warnings.length, 0);
 
   const bad = resolvePoolAddresses('x'.repeat(10), []);
-  assert.ok(bad.warnings.some((w) => w.includes('mint 地址无法解析') || w.includes('未能推导')));
+  assert.ok(bad.warnings.some((w) => w.text.includes('mint 地址无法解析') || w.text.includes('未能推导')));
 });
 
 // ── bonding curve 解码 ───────────────────────────────────────────

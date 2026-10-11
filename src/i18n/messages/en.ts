@@ -6,6 +6,8 @@
  */
 import type { Messages } from './zh';
 import { findingsEn } from './findings.en';
+import { piecesEn } from './pieces.en';
+import { warningsEn } from './warnings.en';
 
 export const en: Messages = {
   app: {
@@ -62,6 +64,7 @@ export const en: Messages = {
   },
 
   radar: {
+    noData: 'No data',
     note: 'Larger radius = higher risk · grey "no data" means the dimension was not collected',
   },
 
@@ -119,14 +122,28 @@ export const en: Messages = {
       dimFailed: 'Failed',
       loadFailed: 'Load failed (HTTP {status})',
       holderKinds: {
+        // 长名直接是字符串：t('report.common.holderKinds.pool')
+        // 短名在子对象里：  t('report.common.holderKinds.pool.short')
+        // ⚠️ 短名不能再写成 'short.pool' 或 'pool.short' 这种扁平带点 key ——
+        // lookup 按 `.` 分层，那个写法查不到，界面上会直接显示出这串 key。
         pool: 'Liquidity pool',
         burn: 'Burn address',
-        timelock: 'Timelock',
+        timelock: 'Time-locked',
         custody: 'Program custody',
         dev: 'Creator',
         related: 'Linked to deployer',
-        sniper: 'Sniper',
+        sniper: 'Sniper position',
         retail: 'Retail',
+        short: {
+          pool: 'Pool',
+          burn: 'Burn',
+          timelock: 'Locked',
+          custody: 'Custody',
+          dev: 'Creator',
+          related: 'Linked',
+          sniper: 'Sniper',
+          retail: 'Retail',
+        },
       },
       pnlBuckets: {
         hugeProfit: 'Unrealized > 200% (likely to take profit)',
@@ -414,4 +431,6 @@ export const en: Messages = {
   },
 
   findings: findingsEn,
+  pieces: piecesEn,
+  warnings: warningsEn,
 };

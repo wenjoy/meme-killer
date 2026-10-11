@@ -36,3 +36,36 @@ test('tab key 与字典 tabs.* 一一对应', () => {
     assert.ok((en.tabs as Record<string, string>)[k], `tab ${k} 缺英文`);
   }
 });
+
+test('盈亏分桶与托管程序都必须有中英文名', () => {
+  // 这两处曾是英文界面下漏网的中文：label 由分析器/常量提供，UI 直接渲染。
+  // 现在走 key 查表，所以每条定义都必须在两种语言里都有译文 —— 缺了就在这失败。
+  const pnlZh = (zh.report as unknown as { common: { pnlBuckets: Record<string, string> } })
+    .common.pnlBuckets;
+  const pnlEn = (en.report as unknown as { common: { pnlBuckets: Record<string, string> } })
+    .common.pnlBuckets;
+  for (const k of Object.keys(pnlZh)) {
+    assert.ok(pnlEn[k], `盈亏分桶 ${k} 缺英文`);
+    assert.notEqual(pnlEn[k], pnlZh[k], `盈亏分桶 ${k} 的英文与中文相同`);
+  }
+
+  const cZh = (zh.report as unknown as { common: { custodyPrograms: Record<string, string> } })
+    .common.custodyPrograms;
+  const cEn = (en.report as unknown as { common: { custodyPrograms: Record<string, string> } })
+    .common.custodyPrograms;
+  for (const k of Object.keys(cZh)) {
+    assert.ok(cEn[k], `托管程序 ${k} 缺英文`);
+  }
+});
+
+test('constants 里每个盈亏分桶都有对应的字典条�目', async () => {
+  const { THRESHOLDS } = await import('../core/constants.ts');
+  const pnlZh = (zh.report as unknown as { common: { pnlBuckets: Record<string, string> } })
+    .common.pnlBuckets;
+  for (const b of THRESHOLDS.sellPressure.pnlBuckets) {
+    assert.ok(
+      pnlZh[(b as { key?: string }).key ?? ''],
+      `分桶 ${b.label} 的 key 在字典里找不到 —— 界面会退回中文`,
+    );
+  }
+});

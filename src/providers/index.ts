@@ -13,6 +13,7 @@
  * 3. 不猜。拿不到的字段留空，不用启发式编一个看起来确定的数字。
  */
 import { THRESHOLDS } from '@/core/constants';
+import { warn } from '../core/warning';
 import { scan } from '@/core/engine';
 import type {
   DeveloperInfo,
@@ -21,6 +22,7 @@ import type {
   HolderRow,
   LiquidityInfo,
   RawHolder,
+  Warning,
   ScanInput,
   ScanMeta,
   ScanReport,
@@ -65,7 +67,7 @@ export function mergeInputs(parts: {
   developer: Awaited<ReturnType<typeof fetchDeveloper>>;
   dex: Awaited<ReturnType<typeof fetchDexScreener>>;
   rug: RugCheckResult;
-  warnings: string[];
+  warnings: Warning[];
   origins: Record<string, FieldOrigin>;
   /** 三级解析后的部署者（providers/creator.ts），用于把 dev 本人剔出狙击仓位 */
   creator?: string;
@@ -119,6 +121,7 @@ export function mergeInputs(parts: {
     if (pools.addresses.has(addr)) continue;
     pools.addresses.add(addr);
     pools.labels[addr] = 'RugCheck 池/金库账户';
+    pools.labelKeys[addr] = 'rugcheck';
   }
 
   const poolAddresses = [...pools.addresses];
@@ -179,6 +182,7 @@ export function mergeInputs(parts: {
         ...out,
         isPool: true,
         label: pools.labels[h.address] ?? pools.labels[h.tokenAccount ?? ''] ?? 'observed pool',
+        labelKey: pools.labelKeys[h.address] ?? pools.labelKeys[h.tokenAccount ?? ''] ?? 'observedPool',
       };
     }
     if (!out.isPool && !out.isBurn && earlyBuyers.has(h.address)) out = { ...out, isSniper: true };
@@ -188,9 +192,13 @@ export function mergeInputs(parts: {
   const sniperPct = holders.filter((h) => h.isSniper).reduce((s, h) => s + (h.pct ?? 0), 0);
   if (earlyBuyers.size > 0) {
     warnings.push(
-      `狙击仓位为推算值：取代币最早 ${THRESHOLDS.liquidity.sniperWindowTrades} 笔成交，` +
-        `排除部署者相关地址后剩 ${earlyBuyers.size} 个付款方，与当前前 20 大持仓求交集` +
-        '（链上只返回前 20），因此只是下限，不是全量。',
+      warn(
+        'warnings.index.sniperEstimate',
+        { window: THRESHOLDS.liquidity.sniperWindowTrades, n: earlyBuyers.size },
+        `狙击仓位为推算值：取代币最早 ${THRESHOLDS.liquidity.sniperWindowTrades} 笔成交，` +
+          `排除部署者相关地址后剩 ${earlyBuyers.size} 个付款方，与当前前 20 大持仓求交集` +
+          '（链上只返回前 20），因此只是下限，不是全量。',
+      ),
     );
   }
 
@@ -341,8 +349,12 @@ export function mergeInputs(parts: {
     }
     if (contract.lp?.exists === true && contract.lp.locked === undefined && contract.lp.burned === undefined) {
       warnings.push(
-        'LP 是否锁定/销毁未能确认（RugCheck 未覆盖该池或本次不可达）。当前显示为「未知」—— ' +
-          '请在 RugCheck 上二次确认（这关系到能否被撤池）。',
+        warn(
+          'warnings.index.lpLockUnconfirmed',
+          undefined,
+          'LP 是否锁定/销毁未能确认（RugCheck 未覆盖该池或本次不可达）。当前显示为「未知」—— ' +
+            '请在 RugCheck 上二次确认（这关系到能否被撤池）。',
+        ),
       );
     }
   }
@@ -399,7 +411,7 @@ export async function collectAndScan(
   opts: CollectOptions = {},
 ): Promise<ScanReport> {
   const started = Date.now();
-  const warnings: string[] = [];
+  const warnings: Warning[] = [];
   const origins: Record<string, FieldOrigin> = {};
 
   if (!isLikelyMint(mint)) {
@@ -415,7 +427,11 @@ export async function collectAndScan(
           token: {},
           liquidity: null,
           origin: 'unavailable' as FieldOrigin,
-          warning: '已跳过 DexScreener（调试模式）',
+          warning: warn(
+            'warnings.dexscreener.skippedDebug',
+            undefined,
+            '已跳过 DexScreener（调试模式）',
+          ),
         })
       : fetchDexScreener(mint),
     fetchMintActivity(mint, 0, warnings),
@@ -467,7 +483,11 @@ export async function collectAndScan(
 
   origins.social = 'unavailable';
   warnings.push(
-    '社交热度数据源未接入（Helius 不提供社交数据，需 X/TG 第三方服务）。该维度标记为未采集，不计入评分。',
+    warn(
+      'warnings.index.socialNotIntegrated',
+      undefined,
+      '社交热度数据源未接入（Helius 不提供社交数据，需 X/TG 第三方服务）。该维度标记为未采集，不计入评分。',
+    ),
   );
 
   // ── 全量持有人总览：账户数在阈值内就自动拉 ──────────────────────
@@ -490,8 +510,15 @@ export async function collectAndScan(
       estimatedAccounts: reportedHolders,
     };
     warnings.push(
-      `持有人总览未自动加载：约 ${reportedHolders.toLocaleString()} 个账户超过上限 ` +
-        `${THRESHOLDS.holders.overviewMaxAccounts.toLocaleString()}。这不是「没有持有人」，是按需加载。`,
+      warn(
+        'warnings.index.overviewNotLoaded',
+        {
+          accounts: reportedHolders.toLocaleString(),
+          max: THRESHOLDS.holders.overviewMaxAccounts.toLocaleString(),
+        },
+        `持有人总览未自动加载：约 ${reportedHolders.toLocaleString()} 个账户超过上限 ` +
+          `${THRESHOLDS.holders.overviewMaxAccounts.toLocaleString()}。这不是「没有持有人」，是按需加载。`,
+      ),
     );
   } else {
     const enumerated = await getHolderAccountsCached(
@@ -506,9 +533,18 @@ export async function collectAndScan(
       const withBal = enumerated.accounts.filter((a) => a.amount > 0n).length;
       if (reportedHolders !== undefined) {
         warnings.push(
-          `「持有人数」有三个口径，差额不做推断：链上 token account ${enumerated.accounts.length} 个` +
-            `（其中有余额 ${withBal} 个、已清空 ${enumerated.accounts.length - withBal} 个）、` +
-            `RugCheck 报 ${reportedHolders.toLocaleString()} 个。`,
+          warn(
+            'warnings.index.threeCalibers',
+            {
+              accounts: enumerated.accounts.length,
+              withBalance: withBal,
+              empty: enumerated.accounts.length - withBal,
+              reported: reportedHolders.toLocaleString(),
+            },
+            `「持有人数」有三个口径，差额不做推断：链上 token account ${enumerated.accounts.length} 个` +
+              `（其中有余额 ${withBal} 个、已清空 ${enumerated.accounts.length - withBal} 个）、` +
+              `RugCheck 报 ${reportedHolders.toLocaleString()} 个。`,
+          ),
         );
       }
     } else {

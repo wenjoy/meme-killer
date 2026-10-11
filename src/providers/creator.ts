@@ -13,12 +13,15 @@
  *
  * 抽成纯函数是为了能直接测「谁优先」这件事本身 —— 顺序错了整个开发者维度都在追错人。
  */
+import type { Warning } from '../core/types';
+import { warn } from '../core/warning';
+
 export interface CreatorResolution {
   creator?: string;
   source?: 'curve' | 'metadata' | 'create-tx';
   /** 创建交易的付款方；与 creator 不同时才有值（UI 单独展示） */
   launchWallet?: string;
-  warnings: string[];
+  warnings: Warning[];
 }
 
 export function resolveCreator(input: {
@@ -35,25 +38,37 @@ export function resolveCreator(input: {
       : launchWallet
         ? 'create-tx'
         : undefined;
-  const warnings: string[] = [];
+  const warnings: Warning[] = [];
 
   if (!creator) {
     warnings.push(
-      '未能确定部署者地址：pump.fun 曲线状态、metadata creators、创建交易付款方三处都没取到。',
+      warn(
+        'warnings.creator.unresolved',
+        undefined,
+        '未能确定部署者地址：pump.fun 曲线状态、metadata creators、创建交易付款方三处都没取到。',
+      ),
     );
     return { warnings };
   }
   if (source === 'create-tx') {
     warnings.push(
-      `未能读到 pump.fun 曲线或 metadata 里的 creator，部署者身份取自创建交易的付款方 ` +
-        `${launchWallet}（**推断值**：用打包器/launchpad 发币时，这个地址不是真正的 dev）。`,
+      warn(
+        'warnings.creator.fromCreateTx',
+        { launchWallet: launchWallet ?? '' },
+        `未能读到 pump.fun 曲线或 metadata 里的 creator，部署者身份取自创建交易的付款方 ` +
+          `${launchWallet}（**推断值**：用打包器/launchpad 发币时，这个地址不是真正的 dev）。`,
+      ),
     );
   }
   if (launchWallet && launchWallet !== creator) {
     warnings.push(
-      `创建交易的付款方 ${launchWallet} 与程序记录的 creator ${creator} **不是同一个地址**：` +
-        '本报告的开发者维度按 creator 计算（程序状态更权威）；付款方可能是打包器/launchpad，' +
-        '不要把两者混为一谈。',
+      warn(
+        'warnings.creator.launchWalletDiffers',
+        { launchWallet, creator },
+        `创建交易的付款方 ${launchWallet} 与程序记录的 creator ${creator} **不是同一个地址**：` +
+          '本报告的开发者维度按 creator 计算（程序状态更权威）；付款方可能是打包器/launchpad，' +
+          '不要把两者混为一谈。',
+      ),
     );
     return { creator, source, launchWallet, warnings };
   }

@@ -165,7 +165,7 @@ test('burn 地址被识别为销毁，不算流通持有人', () => {
 
 test('DAS 兜底与未取全的状态要如实带出来', () => {
   const { overview } = buildHolderOverview(
-    { source: 'das', truncated: true, warnings: ['达到上限'], accounts: [acc('a', 100)] },
+    { source: 'das', truncated: true, warnings: [{ key: 'warnings.holderList.dasCapped', text: '达到上限' }], accounts: [acc('a', 100)] },
     ctx(),
     { reportedHolders: 50_000 },
   );

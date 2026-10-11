@@ -19,7 +19,7 @@ test('curve 程序状态优先于 metadata 与创建交易付款方', () => {
   assert.equal(r.source, 'curve');
   assert.equal(r.launchWallet, 'LaunchWallet111', '付款方不同要带出来单独展示');
   assert.ok(
-    r.warnings.some((w) => w.includes('不是同一个地址')),
+    r.warnings.some((w) => w.text.includes('不是同一个地址')),
     '两者不同必须有告警，否则读者会以为 dev 就是付款方',
   );
 });
@@ -33,7 +33,7 @@ test('没有 curve 时用 metadata，都没有才回退到付款方并标为推�
   assert.equal(tx.creator, 'LaunchWallet111');
   assert.equal(tx.source, 'create-tx');
   assert.ok(
-    tx.warnings.some((w) => w.includes('推断值')),
+    tx.warnings.some((w) => w.text.includes('推断值')),
     '用付款方推断时必须写明这是推断值',
   );
   assert.equal(tx.launchWallet, undefined, 'creator 就是付款方时不必重复展示');
@@ -43,7 +43,7 @@ test('三级都拿不到 → 明确未知，不编一个地址出来', () => {
   const r = resolveCreator({});
   assert.equal(r.creator, undefined);
   assert.equal(r.source, undefined);
-  assert.ok(r.warnings.some((w) => w.includes('未能确定部署者地址')));
+  assert.ok(r.warnings.some((w) => w.text.includes('未能确定部署者地址')));
 });
 
 test('pump.fun 实测案例：付款方 ≠ creator，两处都要能被报告读到', () => {

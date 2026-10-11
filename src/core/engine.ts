@@ -14,6 +14,7 @@ import {
   scoreFromFindings,
 } from './constants';
 import { analyzeContract } from './analyzers/contract';
+import { warn } from './warning';
 import { analyzeLiquidity } from './analyzers/liquidity';
 import { analyzeHolders } from './analyzers/holders';
 import { analyzeDeveloper } from './analyzers/developer';
@@ -234,7 +235,9 @@ export function emptyReport(mint: string, reason: string): ScanReport {
       live: false,
       fetchedAt: new Date().toISOString(),
       origins: {},
-      warnings: [reason],
+      warnings: [
+        warn('warnings.engine.scanFailed', { reason }, reason),
+      ],
     },
     summary: `无法分析 ${mint}：${reason}`,
   };

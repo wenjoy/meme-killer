@@ -15,6 +15,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
+import { lookup } from './lookup';
 import { LOCALES } from './types';
 import type { Locale, MessageParams } from './types';
 import { en } from './messages/en';
@@ -96,38 +97,6 @@ function interpolate(template: string, params?: MessageParams): string {
  * 而且所有「字典完整性」测试依然是绿的（它们只比对字典文件，不走 lookup）。
  * 这个 bug 真实发生过一次。
  */
-function lookup(dict: unknown, key: string): string | undefined {
-  if (dict === null || typeof dict !== 'object') return undefined;
-  const obj = dict as Record<string, unknown>;
-
-  // 1) 顶层就是这个名字（app.name 那类，也可以说是「字典被拍平了」的情形）
-  const direct = obj[key];
-  if (typeof direct === 'string') return direct;
-
-  const parts = key.split('.');
-
-  // 2) 逐层下钻（report.largeSells.colTime 那类真正的嵌套）
-  let cur: unknown = dict;
-  for (const part of parts) {
-    if (cur === null || typeof cur !== 'object') {
-      cur = undefined;
-      break;
-    }
-    cur = (cur as Record<string, unknown>)[part];
-  }
-  if (typeof cur === 'string') return cur;
-
-  // 3) 取首段当下钻起点，再用「整条 key」去查它下面的扁平属性
-  //    （findings 那类：扁平 Record，但 key 自己带全前缀）
-  const head = obj[parts[0]!];
-  if (head !== null && typeof head === 'object') {
-    const flat = (head as Record<string, unknown>)[key];
-    if (typeof flat === 'string') return flat;
-  }
-
-  return undefined;
-}
-
 export function I18nProvider({ children }: { children: ReactNode }) {
   // 初始值必须是确定的，否则服务端渲染与客户端首帧不一致会报 hydration 错误。
   // 所以这里先用 'zh'（默认语言），挂载后再按探测结果切换。

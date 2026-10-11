@@ -18,6 +18,7 @@
  * 用户的等待必须是他自己按下去的，不能被系统偷偷占用配额。
  */
 import { randomUUID } from 'node:crypto';
+import type { Warning } from '../core/types';
 
 import { THRESHOLDS } from '../core/constants';
 import { fetchDeepHolderHistory, pickDeepTargets } from './deepHolders';
@@ -40,7 +41,7 @@ export interface DeepJob {
   /** 预计等待秒数（基于实测的单任务耗时） */
   etaSec?: number;
   result?: DeepHolderResult;
-  warnings: string[];
+  warnings: Warning[];
   error?: string;
 }
 

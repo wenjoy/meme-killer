@@ -11,7 +11,8 @@
  *   因此狙击占比只能标记为 heuristic（推算），不能当作链上事实。
  * - 池地址可以从 pair 里拿到，这解决了 solana.ts 里「无法剔除池持仓」的缺口。
  */
-import type { FieldOrigin, LiquidityInfo, TokenInfo } from '@/core/types';
+import type { FieldOrigin, LiquidityInfo, TokenInfo, Warning } from '@/core/types';
+import { warn } from '@/core/warning';
 
 const BASE = 'https://api.dexscreener.com/latest/dex/tokens';
 const TIMEOUT_MS = 8000;
@@ -36,7 +37,7 @@ export interface DexResult {
   token: Partial<TokenInfo>;
   liquidity: LiquidityInfo | null;
   origin: FieldOrigin;
-  warning?: string;
+  warning?: Warning;
 }
 
 /** 取 base58 交易量最大的那个 pair —— meme 币常有多个池，主池才代表真实流动性 */
@@ -63,7 +64,11 @@ export async function fetchDexScreener(mint: string): Promise<DexResult> {
         token: {},
         liquidity: null,
         origin: 'unavailable',
-        warning: `DexScreener 返回 ${res.status}，市场数据缺失（可能限流）。`,
+        warning: warn(
+          'warnings.dexscreener.httpError',
+          { status: res.status },
+          `DexScreener 返回 ${res.status}，市场数据缺失（可能限流）。`,
+        ),
       };
     }
     const json = (await res.json()) as { pairs?: DexPair[] | null };
@@ -73,7 +78,11 @@ export async function fetchDexScreener(mint: string): Promise<DexResult> {
         token: {},
         liquidity: null,
         origin: 'unavailable',
-        warning: 'DexScreener 未收录该代币 —— 可能尚未建立任何交易池，或属于极新/极冷标的。',
+        warning: warn(
+          'warnings.dexscreener.notFound',
+          undefined,
+          'DexScreener 未收录该代币 —— 可能尚未建立任何交易池，或属于极新/极冷标的。',
+        ),
       };
     }
 
@@ -125,13 +134,17 @@ export async function fetchDexScreener(mint: string): Promise<DexResult> {
     return { token, liquidity, origin: 'dexscreener' };
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError';
+    const reason = err instanceof Error ? err.message : String(err);
+    // 提到变量里再放进字面量：直接写三元表达式时 TS 会把分支的返回类型
+    // 放宽成 string 联合，导致 DexResult.warning 报不兼容（实测踩过）。
+    const warning: Warning = aborted
+      ? warn('warnings.dexscreener.timeout', { ms: TIMEOUT_MS }, `DexScreener 请求超时（${TIMEOUT_MS}ms），市场数据缺失。`)
+      : warn('warnings.dexscreener.failed', { reason }, `DexScreener 请求失败：${reason}`);
     return {
       token: {},
       liquidity: null,
       origin: 'unavailable',
-      warning: aborted
-        ? `DexScreener 请求超时（${TIMEOUT_MS}ms），市场数据缺失。`
-        : `DexScreener 请求失败：${err instanceof Error ? err.message : String(err)}`,
+      warning,
     };
   } finally {
     clearTimeout(timer);

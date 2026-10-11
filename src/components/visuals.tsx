@@ -173,7 +173,7 @@ export function RadarChart({
               fontFamily="var(--font-mono)"
               fill={isMissing ? 'var(--color-ink-600)' : riskColor(scores[a.key] ?? 0)}
             >
-              {isMissing ? '无数据' : (scores[a.key] ?? 0).toFixed(0)}
+              {isMissing ? t('radar.noData') : (scores[a.key] ?? 0).toFixed(0)}
             </text>
           </g>
         );

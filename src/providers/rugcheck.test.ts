@@ -43,7 +43,7 @@ test('LP 锁定比例 100% → locked=true 并带上比例依据', () => {
   assert.equal(r.lp?.burned, undefined, '没有依据就不能说「已销毁」');
   assert.equal(r.lp?.lockedPct, 100);
   assert.equal(r.liquidity?.holderCount, 748, 'totalHolders 应变成 holderCount');
-  assert.ok(r.warnings.some((w) => w.includes('Low amount of LP Providers')));
+  assert.ok(r.warnings.some((w) => w.text.includes('Low amount of LP Providers')));
 });
 
 test('未锁定的 LP，单一地址持有 100% → locked=false + singleHolder，不冒充「未知」', () => {
@@ -118,7 +118,7 @@ test('摘要端点（没有 markets）只能判定锁定比例，其余留空', 
   assert.equal(r.hasAmmMarket, false);
   assert.equal(r.liquidity?.holderCount, 100, '摘要端点的 totalHolders 仍然可用');
   assert.equal(r.liquidity?.liquidityUsd, undefined, '摘要端点没有池深度数据，不得编一个');
-  assert.ok(r.warnings.some((w) => w.includes('汇总数据')));
+  assert.ok(r.warnings.some((w) => w.text.includes('汇总数据')));
 });
 
 test('多池时按成交深度取主池，不被小额池带偏', () => {
@@ -165,7 +165,7 @@ test('LP mint 还是零地址（索引未完成）时，整体按未知处理，
   assert.equal(r.hasAmmMarket, true, '池确实存在');
   assert.equal(r.lp?.locked, undefined, '但不能说「已确认未锁定」');
   assert.equal(r.lp?.singleHolder, undefined);
-  assert.ok(r.warnings.some((w) => w.includes('索引未完成')));
+  assert.ok(r.warnings.some((w) => w.text.includes('索引未完成')));
 });
 
 test('部分锁定（62.9%）时要同时给出「未锁占比」与 LP 持有者明细', () => {

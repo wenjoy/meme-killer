@@ -27,7 +27,8 @@
  *    `rugged: false` 也不代表安全，所以只写 `true`，不用它产出任何积极信号。
  */
 import { BURN_ADDRESSES } from '@/core/constants';
-import type { ContractInfo, FieldOrigin, LiquidityInfo } from '@/core/types';
+import { warn } from '../core/warning';
+import type { ContractInfo, FieldOrigin, LiquidityInfo, Warning } from '@/core/types';
 
 const BASE = 'https://api.rugcheck.xyz/v1/tokens';
 const TIMEOUT_MS = 8000;
@@ -105,7 +106,7 @@ export interface RugCheckResult {
   /** AMM 池 / 金库账户地址，用于持仓剔除 */
   poolAddresses: string[];
   liquidity?: Partial<LiquidityInfo>;
-  warnings: string[];
+  warnings: Warning[];
   origin: FieldOrigin;
 }
 
@@ -129,7 +130,7 @@ export function mapRugCheckReport(
   report: RugReport,
   opts: { liveLpSupply?: number } = {},
 ): Omit<RugCheckResult, 'origin'> {
-  const warnings: string[] = [];
+  const warnings: Warning[] = [];
   const markets = Array.isArray(report.markets) ? report.markets : [];
   // ⚠️ 曲线市场要排除在 LP 判定之外，但它的金库地址仍然要收进来做持仓剔除
   const ammMarkets = markets.filter((m) => m.marketType !== 'pump_fun');
@@ -156,7 +157,13 @@ export function mapRugCheckReport(
   if (report.rugged === true) liquidity.rugged = true;
 
   for (const r of report.risks ?? []) {
-    if (r?.name) warnings.push(`RugCheck 风险项：${r.name}${r.level ? `（${r.level}）` : ''}`);
+    if (r?.name) warnings.push(
+      warn(
+        'warnings.rugcheck.riskItem',
+        { name: r.name, level: r.level ? `（${r.level}）` : '' },
+        `RugCheck 风险项：${r.name}${r.level ? `（${r.level}）` : ''}`,
+      ),
+    );
   }
 
   // ── 主市场：成交深度最大的那个 AMM 池 ────────────────────────────
@@ -172,7 +179,11 @@ export function mapRugCheckReport(
   const lp: RugLp | undefined = lpUsable ? main?.lp : undefined;
   if (main && !lpUsable) {
     warnings.push(
-      'RugCheck 的这个池还没有有效的 LP mint（索引未完成），LP 锁定/销毁状态无法判定，已按「未知」处理。',
+      warn(
+        'warnings.rugcheck.noLpMint',
+        undefined,
+        'RugCheck 的这个池还没有有效的 LP mint（索引未完成），LP 锁定/销毁状态无法判定，已按「未知」处理。',
+      ),
     );
   }
 
@@ -186,8 +197,12 @@ export function mapRugCheckReport(
       poolAddresses: [...poolAddresses],
       liquidity,
       warnings: [
-        'RugCheck 只返回了汇总数据（完整报告过大），因此只能判定 LP 锁定比例，' +
-          '拿不到 LP 持有者与池地址。',
+        warn(
+          'warnings.rugcheck.summaryOnly',
+          undefined,
+          'RugCheck 只返回了汇总数据（完整报告过大），因此只能判定 LP 锁定比例，' +
+            '拿不到 LP 持有者与池地址。',
+        ),
         ...warnings,
       ],
     };
@@ -437,8 +452,12 @@ async function withLiveSupply(
     return {
       ...mapped,
       warnings: [
-        `无法读取 LP mint ${lpMint} 的链上供应量，因此无法核对「LP 已销毁」的比例，` +
-          '本次只给出 RugCheck 口径的锁定/销毁比例。',
+        warn(
+          'warnings.rugcheck.lpSupplyUnreadable',
+          { lpMint },
+          `无法读取 LP mint ${lpMint} 的链上供应量，因此无法核对「LP 已销毁」的比例，` +
+            '本次只给出 RugCheck 口径的锁定/销毁比例。',
+        ),
         ...mapped.warnings,
       ],
     };
@@ -470,7 +489,11 @@ export async function fetchRugCheck(
       ...mapped,
       origin: 'rugcheck',
       warnings: [
-        `RugCheck 完整报告不可用（${full.reason}），已退回汇总接口。`,
+        warn(
+          'warnings.rugcheck.fullUnavailable',
+          { reason: full.reason },
+          `RugCheck 完整报告不可用（${full.reason}），已退回汇总接口。`,
+        ),
         ...mapped.warnings,
       ],
     };
@@ -481,8 +504,12 @@ export async function fetchRugCheck(
     stillOnCurve: false,
     poolAddresses: [],
     warnings: [
-      `RugCheck 不可用（${full.reason}；汇总接口：${summary.reason}）—— ` +
-        'LP 是否锁定/销毁、持有人总数本次无法判定，报告中会如实标为「未知」。',
+      warn(
+        'warnings.rugcheck.unavailable',
+        { fullReason: full.reason, summaryReason: summary.reason },
+        `RugCheck 不可用（${full.reason}；汇总接口：${summary.reason}）—— ` +
+          'LP 是否锁定/销毁、持有人总数本次无法判定，报告中会如实标为「未知」。',
+      ),
     ],
     origin: 'unavailable',
   };

@@ -23,6 +23,7 @@
  *   只能靠 `accountData` 的余额变化判断买卖方向。
  */
 import { Connection, PublicKey } from '@solana/web3.js';
+import { warn } from '../core/warning';
 import {
   AMM_PROGRAMS,
   BURN_ADDRESSES,
@@ -30,17 +31,7 @@ import {
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
 } from '@/core/constants';
-import type {
-  ContractInfo,
-  LargeSellEvidence,
-  DeveloperInfo,
-  FieldOrigin,
-  HolderCustody,
-  LiquidityInfo,
-  RawHolder,
-  SocialInfo,
-  TokenInfo,
-} from '@/core/types';
+import type { ContractInfo, DeveloperInfo, FieldOrigin, HolderCustody, LargeSellEvidence, LiquidityInfo, RawHolder, SocialInfo, TokenInfo, Warning } from '@/core/types';
 import { THRESHOLDS } from '@/core/constants';
 import { decodeBondingCurve, deriveBondingCurve } from '@/providers/pools';
 
@@ -409,7 +400,7 @@ export interface OnChainResult {
   origins: Record<string, FieldOrigin>;
 }
 
-export async function fetchOnChain(mint: string, warnings: string[]): Promise<OnChainResult> {
+export async function fetchOnChain(mint: string, warnings: Warning[]): Promise<OnChainResult> {
   const origins: Record<string, FieldOrigin> = {};
   const connection = new Connection(rpcUrl(), {
     commitment: 'confirmed',
@@ -433,7 +424,9 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
   if (accountRes.status === 'fulfilled') {
     const info = accountRes.value;
     if (!info) {
-      warnings.push(`链上未找到 mint 账户 ${mint} —— 地址可能错误，或不属于该网络。`);
+      warnings.push(
+        warn('warnings.helius.mintNotFound', { mint }, `链上未找到 mint 账户 ${mint} —— 地址可能错误，或不属于该网络。`),
+      );
       return {
         token,
         contract: null,
@@ -453,7 +446,11 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
     const is2022 = programId === TOKEN_2022_PROGRAM_ID;
     if (!is2022 && programId !== TOKEN_PROGRAM_ID) {
       warnings.push(
-        `mint 账户的 owner 是 ${programId}，既不是 SPL Token 也不是 Token-2022，需人工核对。`,
+        warn(
+          'warnings.helius.unexpectedOwner',
+          { programId },
+          `mint 账户的 owner 是 ${programId}，既不是 SPL Token 也不是 Token-2022，需人工核对。`,
+        ),
       );
     }
 
@@ -474,7 +471,9 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
       contract.transferFeeBps = transferFeeBps;
     }
   } else {
-    warnings.push(`读取 mint 账户失败：${msg(accountRes.reason)}`);
+    warnings.push(
+      warn('warnings.helius.mintReadFailed', { reason: msg(accountRes.reason) }, `读取 mint 账户失败：${msg(accountRes.reason)}`),
+    );
     origins.contract = 'unavailable';
   }
 
@@ -515,7 +514,9 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
       }
     }
   } else {
-    warnings.push(`DAS getAsset 失败：${msg(assetRes.reason)}（名称/符号/价格可能缺失）`);
+    warnings.push(
+      warn('warnings.helius.dasFailed', { reason: msg(assetRes.reason) }, `DAS getAsset 失败：${msg(assetRes.reason)}（名称/符号/价格可能缺失）`),
+    );
   }
 
   // ── 3. 最大持仓 ─────────────────────────────────────────────────
@@ -567,12 +568,21 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
         const amm = ammPools.get(h.address);
         if (amm) {
           h.isPool = true;
-          h.label = amm;
+          h.label = amm.label;
+          h.labelKey = amm.labelKey;
         }
       }
       if (ammPools.size > 0) {
         warnings.push(
-          `按控制程序识别出 ${ammPools.size} 个 AMM/联合曲线金库（${[...new Set(ammPools.values())].join('、')}），已按流动性池剔除。`,
+          warn(
+            'warnings.helius.ammPools',
+            {
+              n: ammPools.size,
+              kinds: [...new Set(ammPools.values())].map((v) => v.label).join('、'),
+              kindKeys: [...new Set(ammPools.values())].map((v) => `pieces.poolLabels.${v.labelKey}`).join(','),
+            },
+            `按控制程序识别出 ${ammPools.size} 个 AMM/联合曲线金库（${[...new Set(ammPools.values())].join('、')}），已按流动性池剔除。`,
+          ),
         );
       }
       if (custody.size > 0) {
@@ -584,9 +594,20 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
         if (locks.length > 0) {
           const lockPct = locks.reduce((s, h) => s + (h.pct ?? 0), 0);
           warnings.push(
-            `识别到 ${locks.length} 个时间锁仓持仓（合计 ${lockPct.toFixed(1)}%）：` +
-              `${locks.map((h) => h.custody!.label).join('、')}。` +
-              '已从集中度与巨鲸计算中剔除，并单独列出。解锁时间当前无法读取（托管账户是 PDA），标为「待接入」。',
+            warn(
+              'warnings.helius.timelocks',
+              {
+                n: locks.length,
+                pct: lockPct.toFixed(1),
+                labels: locks.map((h) => h.custody!.label).join('、'),
+                labelKeys: JSON.stringify([
+                  ...new Set(locks.map((h) => h.custody!.labelKey).filter(Boolean)),
+                ]),
+              },
+              `识别到 ${locks.length} 个时间锁仓持仓（合计 ${lockPct.toFixed(1)}%）：` +
+                `${locks.map((h) => h.custody!.label).join('、')}。` +
+                '已从集中度与巨鲸计算中剔除，并单独列出。解锁时间当前无法读取（托管账户是 PDA），标为「待接入」。',
+            ),
           );
         }
       }
@@ -594,17 +615,25 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
     origins.holders = 'onchain';
 
     if (supply === 0) {
-      warnings.push('未能读到代币总供应量，持仓占比无法计算，集中度维度将标记为未采集。');
+      warnings.push(
+        warn('warnings.helius.supplyUnknown', undefined, '未能读到代币总供应量，持仓占比无法计算，集中度维度将标记为未采集。'),
+      );
       origins.holders = 'unavailable';
       holders.length = 0;
     } else if (holders.length > 0) {
       warnings.push(
-        '链上仅返回前 20 大持仓账户；更深的分布需要索引器。若 AMM 池地址未被识别为池，' +
-        '其持仓会计入集中度，导致 Top10 占比偏高。',
+        warn(
+          'warnings.helius.top20Only',
+          undefined,
+          '链上仅返回前 20 大持仓账户；更深的分布需要索引器。若 AMM 池地址未被识别为池，' +
+            '其持仓会计入集中度，导致 Top10 占比偏高。',
+        ),
       );
     }
   } else {
-    warnings.push(`读取持仓分布失败：${msg(largestRes.reason)}`);
+    warnings.push(
+      warn('warnings.helius.largestFailed', { reason: msg(largestRes.reason) }, `读取持仓分布失败：${msg(largestRes.reason)}`),
+    );
     origins.holders = 'unavailable';
   }
 
@@ -629,12 +658,18 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
         if (state) curve = { exists: true, ...state };
         else
           warnings.push(
-            `推导出的 bonding curve 地址 ${curveAddress} 不是 pump.fun 曲线账户` +
-              '（owner 或判别符不符），已忽略；curve 内真实 SOL 无法确认。',
+            warn(
+              'warnings.helius.curveMismatch',
+              { curveAddress },
+              `推导出的 bonding curve 地址 ${curveAddress} 不是 pump.fun 曲线账户` +
+                '（owner 或判别符不符），已忽略；curve 内真实 SOL 无法确认。',
+            ),
           );
       }
     } catch (err) {
-      warnings.push(`读取 bonding curve 账户失败：${msg(err)}（curve 内真实 SOL 无法确认）`);
+      warnings.push(
+        warn('warnings.helius.curveReadFailed', { reason: msg(err) }, `读取 bonding curve 账户失败：${msg(err)}（curve 内真实 SOL 无法确认）`),
+      );
     }
   }
 
@@ -1055,7 +1090,7 @@ const EARLY_TX_LIMIT = THRESHOLDS.liquidity.sniperWindowTrades;
 export async function fetchMintActivity(
   mint: string,
   decimals: number,
-  warnings: string[],
+  warnings: Warning[],
 ): Promise<MintActivityResult> {
   const liquidity: Partial<LiquidityInfo> = {};
   const poolCandidates: string[] = [];
@@ -1090,8 +1125,12 @@ export async function fetchMintActivity(
       creator = tx.feePayer;
       if (tx.type !== 'CREATE' && tx.type !== 'TOKEN_MINT') {
         warnings.push(
-          '最早一笔交易不是创建交易（可能是索引缺口或创建前的转账）：' +
-            '该笔的付款方只能作为部署者的**兜底候选**，发币时间也只能作参考。',
+          warn(
+            'warnings.helius.oldestNotCreate',
+            undefined,
+            '最早一笔交易不是创建交易（可能是索引缺口或创建前的转账）：' +
+              '该笔的付款方只能作为部署者的**兜底候选**，发币时间也只能作参考。',
+          ),
         );
       }
     }
@@ -1102,7 +1141,9 @@ export async function fetchMintActivity(
       earlyBuyers.push(t.feePayer);
     }
   } else {
-    warnings.push(`拉取最早交易失败：${msg(oldestRes.reason)}（无法确定部署者与发币时间）`);
+    warnings.push(
+      warn('warnings.helius.oldestFailed', { reason: msg(oldestRes.reason) }, `拉取最早交易失败：${msg(oldestRes.reason)}（无法确定部署者与发币时间）`),
+    );
   }
 
   // 窗口可用性只看「最早成交这一批有没有真拿到」：拿到了哪怕只有 3 笔也成立
@@ -1139,7 +1180,11 @@ export async function fetchMintActivity(
       origin = 'onchain';
     } else {
       warnings.push(
-        `最近 ${txs.length} 笔交易里没有可识别的买卖方向（可能样本太少，或该交易类型未被 Helius 解析）。`,
+        warn(
+          'warnings.helius.noDirection',
+          { n: txs.length },
+          `最近 ${txs.length} 笔交易里没有可识别的买卖方向（可能样本太少，或该交易类型未被 Helius 解析）。`,
+        ),
       );
     }
 
@@ -1147,7 +1192,9 @@ export async function fetchMintActivity(
     // 该信号无法区分 AMM 池与 dev 砸盘，误用会把 dev 的筹码抹成流动性。
     // 池地址只认 pools.ts 的确定性推导与 DexScreener 的 pair。
   } else {
-    warnings.push(`拉取成交明细失败：${msg(recentRes.reason)}`);
+    warnings.push(
+      warn('warnings.helius.tradesFailed', { reason: msg(recentRes.reason) }, `拉取成交明细失败：${msg(recentRes.reason)}`),
+    );
   }
 
   // ── 逐地址成交：钻石手维度要用「一个人的完整行为」，不是聚合数字 ──────
@@ -1254,7 +1301,7 @@ export async function fetchMetadataCreators(
 
 export interface DeveloperResult {
   developer: DeveloperInfo | null;
-  warnings: string[];
+  warnings: Warning[];
   origin: FieldOrigin;
 }
 
@@ -1273,13 +1320,17 @@ export interface DeveloperResult {
 export async function fetchDeveloper(
   mint: string,
   creator: string | undefined,
-  warnings: string[],
+  warnings: Warning[],
 ): Promise<DeveloperResult> {
   if (!hasEnhancedApi()) {
     return {
       developer: null,
       warnings: [
-        '未配置 Helius API key，「开发者历史」维度无法计算（dev 卖出、历史发币都需要 Enhanced API）。',
+        warn(
+          'warnings.helius.noApiKey',
+          undefined,
+          '未配置 Helius API key，「开发者历史」维度无法计算（dev 卖出、历史发币都需要 Enhanced API）。',
+        ),
       ],
       origin: 'unavailable',
     };
@@ -1289,14 +1340,18 @@ export async function fetchDeveloper(
       developer: null,
       warnings: [
         ...warnings,
-        '未能确定部署者地址（创建交易缺失），「开发者历史」维度无法计算。',
+        warn(
+          'warnings.helius.developerNoCreator',
+          undefined,
+          '未能确定部署者地址（创建交易缺失），「开发者历史」维度无法计算。',
+        ),
       ],
       origin: 'unavailable',
     };
   }
 
   const dev: DeveloperInfo = { creator };
-  const localWarnings: string[] = [];
+  const localWarnings: Warning[] = [];
 
   // ── 0. 权威判据：creator 在该代币上的**当前链上余额** ─────────────
   // 流水比例（卖出/买入）会被交易历史窗口截断而失真 —— 实测出现过
@@ -1338,14 +1393,24 @@ export async function fetchDeveloper(
     dev.devCurrentBalance = holding;
     if (dev.devFullyExited === false && holding > 0) {
       localWarnings.push(
-        `creator 当前仍持有 ${holding.toLocaleString()} 枚该代币，` +
-        '因此不会判定为「已清仓」（流水比例可能因历史窗口截断而偏高）。',
+        warn(
+          'warnings.helius.creatorStillHolding',
+          { holding: holding.toLocaleString() },
+          `creator 当前仍持有 ${holding.toLocaleString()} 枚该代币，` +
+            '因此不会判定为「已清仓」（流水比例可能因历史窗口截断而偏高）。',
+        ),
       );
     }
   } else {
     // 查不到余额 → 明确标记「未知」，让分析器只提示不否决
     dev.devFullyExited = undefined;
-    localWarnings.push('未能读取 creator 的代币余额，无法确认其是否已清仓，将只作提示不作判死。');
+    localWarnings.push(
+      warn(
+        'warnings.helius.creatorBalanceUnknown',
+        undefined,
+        '未能读取 creator 的代币余额，无法确认其是否已清仓，将只作提示不作判死。',
+      ),
+    );
   }
 
   // creator 自己的历史：历史发币 + 资金来源并行
@@ -1377,10 +1442,22 @@ export async function fetchDeveloper(
     if (prior.length > 0) dev.priorTokens = prior.slice(0, 50).map((m) => ({ mint: m }));
     if (recent.size > 0) dev.tokensLast7d = recent.size;
     if (list.length === 0) {
-      localWarnings.push('部署者地址没有交易历史，dev 卖出与历史发币无法验证。');
+      localWarnings.push(
+        warn(
+          'warnings.helius.creatorNoHistory',
+          undefined,
+          '部署者地址没有交易历史，dev 卖出与历史发币无法验证。',
+        ),
+      );
     }
   } else {
-    localWarnings.push(`查询部署者历史失败：${msg(histRes.reason)}`);
+    localWarnings.push(
+      warn(
+        'warnings.helius.creatorHistoryFailed',
+        { reason: msg(histRes.reason) },
+        `查询部署者历史失败：${msg(histRes.reason)}`,
+      ),
+    );
   }
 
   // 资金来源：看 creator 最早一笔交易的 SOL 是谁给的。
@@ -1396,7 +1473,13 @@ export async function fetchDeveloper(
       }
     }
   } else {
-    localWarnings.push(`查询部署者资金来源失败：${msg(oldestRes.reason)}`);
+    localWarnings.push(
+      warn(
+        'warnings.helius.devFundingFailed',
+        { reason: msg(oldestRes.reason) },
+        `查询部署者资金来源失败：${msg(oldestRes.reason)}`,
+      ),
+    );
   }
 
   return { developer: dev, warnings: localWarnings, origin: 'onchain' };
@@ -1480,10 +1563,13 @@ export function parseJupiterLockEscrow(data: Buffer): {
 async function detectCustody(
   connection: Connection,
   holders: { owner: string; tokenAccount: string }[],
-  warnings: string[],
-): Promise<{ custody: Map<string, HolderCustody>; pools: Map<string, string> }> {
+  warnings: Warning[],
+): Promise<{
+  custody: Map<string, HolderCustody>;
+  pools: Map<string, { label: string; labelKey: string }>;
+}> {
   const result = new Map<string, HolderCustody>();
-  const pools = new Map<string, string>();
+  const pools = new Map<string, { label: string; labelKey: string }>();
   if (holders.length === 0) return { custody: result, pools };
 
   const dedup = new Map<string, string>(); // owner -> tokenAccount
@@ -1520,6 +1606,7 @@ async function detectCustody(
             programId,
             kind: known.kind,
             label: known.label,
+            labelKey: known.labelKey,
           };
           // 锁仓：顺手从托管账户里读出解锁时间
           if (known.kind === 'timelock') {
@@ -1550,7 +1637,9 @@ async function detectCustody(
       });
     }
   } catch (err) {
-    warnings.push(`托管持仓识别失败（无法批量读取 owner 账户）：${msg(err)}`);
+    warnings.push(
+      warn('warnings.helius.custodyFailed', { reason: msg(err) }, `托管持仓识别失败（无法批量读取 owner 账户）：${msg(err)}`),
+    );
     return { custody: result, pools };
   }
 
@@ -1587,19 +1676,31 @@ async function detectCustody(
     });
     if (unmatched.length > 0) {
       warnings.push(
-        `另有 ${unmatched.length} 个持仓的 owner 是 PDA，但控制程序不在已核实名单里，` +
-          '因此不标注、也不剔除，按普通持仓计入集中度。',
+        warn(
+          'warnings.helius.unmatchedPda',
+          { n: unmatched.length },
+          `另有 ${unmatched.length} 个持仓的 owner 是 PDA，但控制程序不在已核实名单里，` +
+            '因此不标注、也不剔除，按普通持仓计入集中度。',
+        ),
       );
     }
     if (noAccount.length > CAP) {
       warnings.push(
-        `有 ${noAccount.length} 个 PDA 持仓，只反查了前 ${CAP} 个；其余按普通持仓处理（偏保守）。`,
+        warn(
+          'warnings.helius.pdaCapped',
+          { n: noAccount.length, cap: CAP },
+          `有 ${noAccount.length} 个 PDA 持仓，只反查了前 ${CAP} 个；其余按普通持仓处理（偏保守）。`,
+        ),
       );
     }
   } else if (noAccount.length > 0) {
     warnings.push(
-      `发现 ${noAccount.length} 个 PDA 持仓，但未配置 Helius API key 无法反查控制程序，` +
-        '一律按普通持仓计入集中度（不做剔除）。',
+      warn(
+        'warnings.helius.pdaNoApiKey',
+        { n: noAccount.length },
+        `发现 ${noAccount.length} 个 PDA 持仓，但未配置 Helius API key 无法反查控制程序，` +
+          '一律按普通持仓计入集中度（不做剔除）。',
+      ),
     );
   }
 

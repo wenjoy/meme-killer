@@ -13,6 +13,8 @@
  * 并发 3 + 指数退避才能 50/50 成功。这不是可调参数，是硬约束。
  */
 import { THRESHOLDS } from '../core/constants';
+import type { Warning } from '../core/types';
+import { warn } from '../core/warning';
 import type { HolderEnumeration } from './holderList';
 
 export interface DeepHolderTrade {
@@ -36,7 +38,7 @@ export interface DeepHolderResult {
   pages: number;
   totalTxs: number;
   elapsedMs: number;
-  warnings: string[];
+  warnings: Warning[];
 }
 
 interface HeliusHistoryTx {
@@ -185,7 +187,7 @@ export async function fetchDeepHolderHistory(
   apiKey: string,
   opts: { signal?: AbortSignal; onProgress?: (p: DeepProgress) => void } = {},
 ): Promise<DeepHolderResult> {
-  const warnings: string[] = [];
+  const warnings: Warning[] = [];
   const started = Date.now();
   const trades: DeepHolderTrade[] = [];
   let succeeded = 0;
@@ -222,14 +224,22 @@ export async function fetchDeepHolderHistory(
 
   if (failed > 0) {
     warnings.push(
-      `深度模式下有 ${failed} 个地址的历史没拉全（限流或超时），` +
-        `这些地址的成本仍按窗口估算 —— 深度结果只覆盖了 ${succeeded} 个地址。`,
+      warn(
+        'warnings.deepHolders.partial',
+        { failed, succeeded },
+        `深度模式下有 ${failed} 个地址的历史没拉全（限流或超时），` +
+          `这些地址的成本仍按窗口估算 —— 深度结果只覆盖了 ${succeeded} 个地址。`,
+      ),
     );
   }
   if (totalTxs === 0 && succeeded > 0) {
     warnings.push(
-      '深度模式拉到的历史里没有本币成交：这些地址的代币是从别处转入的（不是买来的），' +
-        '因此拿不到买入成本。',
+      warn(
+        'warnings.deepHolders.noNativeTrades',
+        undefined,
+        '深度模式拉到的历史里没有本币成交：这些地址的代币是从别处转入的（不是买来的），' +
+          '因此拿不到买入成本。',
+      ),
     );
   }
 

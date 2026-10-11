@@ -256,11 +256,11 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
 
   if (!caliberUsable) {
     const kinds = classified.filter((h) => h.pct > 0);
-    const desc = (['pool', 'dev', 'related', 'sniper', 'retail'] as const)
+    const kindCounts = (['pool', 'dev', 'related', 'sniper', 'retail'] as const)
       .map((k) => ({ k, n: kinds.filter((h) => h.kind === k).length }))
-      .filter((x) => x.n > 0)
-      .map((x) => `${holderKindLabel(x.k)} ${x.n}`)
-      .join('、');
+      .filter((x) => x.n > 0);
+    // 中文整句（过渡期回退）＋ 结构化版本（渲染层按语言组装）
+    const desc = kindCounts.map((x) => `${holderKindLabel(x.k)} ${x.n}`).join('、');
     add(
       'high',
       'holders.caliberNotApplicable',
@@ -276,6 +276,9 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
         holderCount: holderCount as number,
         minHolders: t.percentageCaliberMinHolders,
         kinds: desc || '无法分类',
+        ...(kindCounts.length > 0
+          ? { kindsParts: JSON.stringify(kindCounts) }
+          : {}),
       },
     );
   } else if (top10Pct > t.top10Danger) {
@@ -312,9 +315,15 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   if (largest && largest.kind !== 'dev' && largestPctOfCirculating > t.singleWalletWarn) {
     // ⚠️ 「谁持有」与结尾的补充说明都随托管与否变化 —— 两处都拆 id，
     // 否则英文语序下拼出来的句子会前后矛盾。
+    // who 的中文整句（过渡期回退）＋ 结构化形态：英文语序下「a non-dev wallet」
+    // 与「a program-custodied position (X)」是两个不同的短语，不能靠拼接。
     const who = largest.custody ? `程序托管仓位（${largest.custody.label}）` : '非 dev 钱包';
+    const whoParts = largest.custody
+      ? { kind: 'custody' as const, label: largest.custody.label }
+      : { kind: 'nonDev' as const };
     const whaleParams = {
       who,
+      whoParts: JSON.stringify(whoParts),
       address: largest.address,
       circulatingPct: largestPctOfCirculating.toFixed(1),
       supplyPct: largest.pct.toFixed(1),
@@ -369,6 +378,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     kind: h.kind,
     counted: !isExcludedKind(h.kind),
     ...(h.label ? { label: h.label } : {}),
+    ...(h.labelKey ? { labelKey: h.labelKey } : {}),
     ...(h.custody
       ? { custody: { kind: h.custody.kind, label: h.custody.label, labelKey: h.custody.labelKey } }
       : {}),
@@ -390,6 +400,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     const lockParams = {
       count: locks.length,
       labels: [...new Set(locks.map((l) => l.label))].join('、'),
+      labelKeys: JSON.stringify([...new Set(locks.map((l) => l.labelKey).filter(Boolean))]),
       timelockPct: timelockPct.toFixed(1),
       ...(locks.some((l) => l.unlockAt)
         ? {
@@ -438,6 +449,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       {
         count: others.length,
         labels: [...new Set(others.map((o) => o.label))].join('、'),
+        labelKeys: JSON.stringify([...new Set(others.map((o) => o.labelKey).filter(Boolean))]),
         circulatingPct: otherCustodyOfCirculating.toFixed(1),
         supplyPct: otherCustodyPct.toFixed(1),
       },

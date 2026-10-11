@@ -224,6 +224,18 @@ export function analyzeContract(data: ScanInput): DimensionResult {
     ? `链上核对该池 LP mint（${lp.lpMint ?? '地址未知'}）：历史铸造 ${audit.everMinted.toLocaleString()}、` +
       `当前链上供应 ${audit.live.toLocaleString()}，差额 ${audit.burned.toLocaleString()} 已销毁、不可恢复`
     : '';
+  /**
+   * auditText 的结构化版本（措辞交给 `pieces.contract.lpAudit`）。
+   * 中文整句作为过渡期回退保留，两者同源。
+   */
+  const auditParts = audit
+    ? {
+        lpMint: lp.lpMint ?? '',
+        everMinted: audit.everMinted.toLocaleString(),
+        live: audit.live.toLocaleString(),
+        burned: audit.burned.toLocaleString(),
+      }
+    : undefined;
   const livePct = lp.burnedPct !== undefined ? Math.max(0, 100 - lp.burnedPct) : undefined;
 
   // 与部署者**关联**的钱包持有多少流通 LP：创建交易的付款方、creator 首笔交易的出资方。
@@ -255,7 +267,7 @@ export function analyzeContract(data: ScanInput): DimensionResult {
         'contract.lpBurned',
         'LP 已销毁',
         `流动性凭证已永久销毁，无法撤池（${lockPct}）。` + (auditText ? `${auditText}。` : ''),
-        { lockPct, ...(auditText ? { auditText } : {}) },
+        { lockPct, ...(auditText ? { auditText } : {}), ...(auditParts ? { auditParts: JSON.stringify(auditParts) } : {}) },
       );
     } else {
       add(
@@ -263,7 +275,7 @@ export function analyzeContract(data: ScanInput): DimensionResult {
         'contract.lpBurnedNoPct',
         'LP 已销毁',
         '流动性凭证已永久销毁，无法撤池。' + (auditText ? `${auditText}。` : ''),
-        auditText ? { auditText } : undefined,
+        auditText ? { auditText, auditParts: JSON.stringify(auditParts) } : undefined,
       );
     }
   } else if (lp.locked) {
@@ -341,7 +353,7 @@ export function analyzeContract(data: ScanInput): DimensionResult {
           `LP 已销毁 ${burnedPctText}%`,
           `${auditText}；即 ${burnedPctText}% 的 LP 已销毁，` +
             `其余 ${livePctText}% 仍在流通。`,
-          { burnedPct: burnedPctText, livePct: livePctText, auditText },
+          { burnedPct: burnedPctText, livePct: livePctText, auditText, ...(auditParts ? { auditParts: JSON.stringify(auditParts) } : {}) },
         );
       } else {
         add(

@@ -467,6 +467,15 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
       `${deepWallets > 0 ? `${deepWallets} 个地址用逐地址**完整历史**算成本（真实值），其余` : ''}` +
       `用成交窗口内能配对的 ${paired} 笔成交估算（窗口共 ${sp.trades.length} 笔）；` +
       '已卖光的钱包不计入抛压；窗口估算的未卖量与实际余额不一致时取较小值。',
+    /**
+     * windowNote 的结构化版本（数字），措辞交给 `pieces.sellPressure.windowNote*`。
+     * 上面那句中文整句作为过渡期回退保留，两者必须同源。
+     */
+    windowNoteParts: {
+      deepWallets,
+      paired,
+      total: sp.trades.length,
+    },
   };
 
   return {

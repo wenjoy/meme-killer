@@ -23,6 +23,8 @@
  * 改用 RugCheck 给出的真实池地址。
  */
 import { PublicKey } from '@solana/web3.js';
+import { warn } from '../core/warning';
+import type { Warning } from '../core/types';
 
 /** pump.fun bonding curve 程序 */
 export const PUMP_BONDING_CURVE_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
@@ -35,9 +37,12 @@ export interface PoolCandidates {
   /** 判定为池的地址集合（可能是池本身，也可能是池的 token account） */
   addresses: Set<string>;
   /** 每个候选地址的来源说明，用于 UI 展示与排错 */
+  /** 池地址 → 中文标签（过渡期回退） */
   labels: Record<string, string>;
+  /** 池地址 → 字典 key（`pieces.poolLabels.*`），与 labels 一一对应 */
+  labelKeys: Record<string, string>;
   /** 推导过程中的告警 */
-  warnings: string[];
+  warnings: Warning[];
 }
 
 /** 由 (owner, mint) 推导 associated token account 地址 */
@@ -133,39 +138,50 @@ export function decodeBondingCurve(owner: string, data: Buffer | Uint8Array): Bo
 export function resolvePoolAddresses(mint: string, pairAddresses: string[] = []): PoolCandidates {
   const addresses = new Set<string>();
   const labels: Record<string, string> = {};
-  const warnings: string[] = [];
+  const labelKeys: Record<string, string> = {};
+  const warnings: Warning[] = [];
 
-  const add = (addr: string | null, label: string) => {
+  const add = (addr: string | null, label: string, labelKey?: string) => {
     if (!addr) return;
     addresses.add(addr);
     labels[addr] = label;
+    if (labelKey) labelKeys[addr] = labelKey;
   };
 
   try {
     new PublicKey(mint);
   } catch {
-    return { addresses, labels, warnings: [`mint 地址无法解析，跳过池推导：${mint}`] };
+    return {
+      addresses,
+      labels,
+      labelKeys,
+      warnings: [
+        warn('warnings.pools.mintUnparsable', { mint }, `mint 地址无法解析，跳过池推导：${mint}`),
+      ],
+    };
   }
 
   // ── 1. pump.fun bonding curve PDA + 它的 ATA ────────────────────
   const curve = deriveBondingCurve(mint);
   if (curve) {
-    add(curve, 'pump.fun bonding curve');
+    add(curve, 'pump.fun bonding curve', 'pumpfunCurve');
     // 池持有的代币在它的 ATA 里，所以 token account 地址也要能识别
-    add(deriveAta(curve, mint), 'pump.fun bonding curve ATA');
+    add(deriveAta(curve, mint), 'pump.fun bonding curve ATA', 'pumpfunCurveAta');
   }
 
   // ── 2. DexScreener 的 pair 地址（最直接的 AMM 池来源）───────────
   // 部分 AMM（如 Raydium v4）代币存在独立 vault 账户而非 ATA，
   // 这类由 RugCheck 的 liquidityA/liquidityB 补上（见 providers/index.ts）。
   for (const pair of pairAddresses) {
-    add(pair, 'DexScreener pair');
-    add(deriveAta(pair, mint), 'DexScreener pair ATA');
+    add(pair, 'DexScreener pair', 'dexscreenerPair');
+    add(deriveAta(pair, mint), 'DexScreener pair ATA', 'dexscreenerPairAta');
   }
 
   if (addresses.size === 0) {
-    warnings.push('未能推导出任何池地址，池持仓可能被计入集中度，Top10 占比会偏高。');
+    warnings.push(
+      warn('warnings.pools.noneDerived', undefined, '未能推导出任何池地址，池持仓可能被计入集中度，Top10 占比会偏高。'),
+    );
   }
 
-  return { addresses, labels, warnings };
+  return { addresses, labels, labelKeys, warnings };
 }

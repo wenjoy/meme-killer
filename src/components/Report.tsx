@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
 
 import { DIMENSION_ORDER, HOLDER_KIND_LABELS, SEVERITY_ORDER } from '@/core/constants';
 import { useI18n } from '@/i18n';
-import { localizeFinding } from '@/i18n/finding';
+import { localizeFinding, localizeWarning } from '@/i18n/finding';
 
 import { THRESHOLDS } from '@/core/constants';
 import type {
@@ -58,6 +58,51 @@ function bucketLabel(
   const k = `report.common.pnlBuckets.${b.key}`;
   const v = t(k);
   return v === k ? b.label : v;
+}
+
+
+/**
+ * 抛压「口径说明」整句。
+ *
+ * 分析器给的是数字（windowNoteParts），措辞在这里按当前语言组装 ——
+ * 因为这句话要被插进 `note1` 的中间（「口径：{note} 盈亏按…」），
+ * 中英文语序不同，不能靠拼接。缺译文时退回分析器的中文整句。
+ *
+ * 与 `src/i18n/finding.ts` 的组合句是同一套做法（分析器只给结构化数据）。
+ */
+function sellPressureWindowNote(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  info: SellPressureInfo,
+): string {
+  const p = info.windowNoteParts;
+  if (!p) return info.windowNote;
+  const K = 'pieces.sellPressure.windowNote';
+  const main = t(K, {
+    deepPart: p.deepWallets > 0 ? t(`${K}.deepPart`, { n: p.deepWallets }) : '',
+    paired: p.paired,
+    total: p.total,
+  });
+  // t() 缺 key 时返回 key 本身 → 用这个特性判断有没有译文
+  return main === K ? info.windowNote : main;
+}
+
+
+/**
+ * 池标签本地化。
+ *
+ * 池地址的标签来自 provider（如 'RugCheck 池/金库账户'），带中文。
+ * provider 同时给出 `labelKey`（`pieces.poolLabels.*`），这里优先查字典，
+ * 查不到才用中文回退 —— 与 Finding / Warning 同一套约定。
+ */
+function poolLabel(
+  t: (key: string) => string,
+  label: string,
+  labelKey?: string,
+): string {
+  if (!labelKey) return label;
+  const k = `pieces.poolLabels.${labelKey}`;
+  const v = t(k);
+  return v === k ? label : v;
 }
 
 function FindingRow({ f }: { f: Finding }) {
@@ -186,7 +231,7 @@ function Provenance({ report }: { report: ScanReport }) {
           <ul className="mt-2 space-y-1">
             {meta.warnings.map((w, i) => (
               <li key={i} className="border-l-2 border-warn/40 pl-2 text-xs leading-relaxed text-ink-300">
-                {w}
+                {localizeWarning(w, t)}
               </li>
             ))}
           </ul>
@@ -777,9 +822,10 @@ function TopHoldersSection({ report }: { report: ScanReport }) {
   const rows = Array.isArray(m?.topHolders) ? (m.topHolders as HolderRow[]) : [];
   if (rows.length === 0) return null;
 
-  // 分类名统一来自 constants（之前这里有一份副本，改名字会漏改）
-  const KIND_LABEL: Record<HolderRow['kind'], string> = Object.fromEntries(
-    Object.entries(HOLDER_KIND_LABELS).map(([k, v]) => [k, v.long]),
+  // 分类名走字典（长名）。constants 里的 HOLDER_KIND_LABELS 只作中文语义基准，
+  // 直接用它会让英文界面显示中文 —— 这里改成查 report.common.holderKinds.*。
+  const KIND_LABEL = Object.fromEntries(
+    Object.keys(HOLDER_KIND_LABELS).map((k) => [k, t(`report.common.holderKinds.${k}`)]),
   ) as Record<HolderRow['kind'], string>;
   const countedTop10 = rows.filter((r) => r.counted).slice(0, 10);
   const countedSum = countedTop10.reduce((s, r) => s + r.pct, 0);
@@ -855,7 +901,19 @@ function TopHoldersSection({ report }: { report: ScanReport }) {
                   >
                     {KIND_LABEL[h.kind]}
                   </span>
-                  {h.label && <span className="ml-1 text-ink-500">（{h.label}）</span>}
+                  {h.label && (
+                    <span className="ml-1 text-ink-500">（{poolLabel(t, h.label, h.labelKey)}）</span>
+                  )}
+                  {h.custody?.label && (
+                    <span className="ml-1 text-ink-500">
+                      （
+                      {t(`report.common.custodyPrograms.${h.custody.labelKey ?? ''}`) ===
+                      `report.common.custodyPrograms.${h.custody.labelKey ?? ''}`
+                        ? h.custody.label
+                        : t(`report.common.custodyPrograms.${h.custody.labelKey}`)}
+                      ）
+                    </span>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   {h.counted ? (
@@ -1198,8 +1256,9 @@ function AllHoldersSection({ report }: { report: ScanReport }) {
 
   if (!overview) return null;
 
+  // 短名：与上面同一套 key，字典里另有 .short 层级
   const KIND_LABEL: Record<string, string> = Object.fromEntries(
-    Object.entries(HOLDER_KIND_LABELS).map(([k, v]) => [k, v.short]),
+    Object.keys(HOLDER_KIND_LABELS).map((k) => [k, t(`report.common.holderKinds.short.${k}`)]),
   );
   const totalPages = meta ? Math.max(1, Math.ceil(meta.filtered / meta.pageSize)) : 1;
   const csvHref = `/api/holders?${query}&format=csv`;
@@ -1794,7 +1853,7 @@ function SellPressureSection({
       )}
 
       <p className="text-[11px] leading-relaxed text-ink-400">
-        {t('report.sellPressure.note1', { note: info.windowNote })}
+        {t('report.sellPressure.note1', { note: sellPressureWindowNote(t, info) })}
         <span className="text-ink-300">{t('report.sellPressure.noteBold')}</span>
         {t('report.sellPressure.note2', {
           hours: Math.round(THRESHOLDS.sellPressure.maxPriceAgeSec / 3600),
