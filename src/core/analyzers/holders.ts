@@ -17,6 +17,7 @@ import type {
   CustodyMetric,
   DimensionResult,
   Finding,
+  HolderRow,
   RawHolder,
   ScanInput,
   Severity,
@@ -31,7 +32,16 @@ export type HolderKind =
   | 'burn'
   | 'timelock'
   | 'custody'
+  /** creator 本人 */
   | 'dev'
+  /**
+   * 与部署者关联的钱包（创建交易的付款方、给 creator 首笔交易出资的钱包）。
+   *
+   * ⚠️ 单独一类而不是算「散户」：它出钱发币、还常常持有 LP，
+   * 把它显示成散户会让读者低估这条筹码的可控性。
+   * 但它**计入集中度**（能随时卖出，不是托管）。
+   */
+  | 'related'
   | 'sniper'
   | 'retail';
 
@@ -43,9 +53,14 @@ export function isExcludedKind(kind: HolderKind): boolean {
 /** 把一个持有者归类 */
 export function classifyHolder(
   holder: RawHolder,
-  opts: { creator?: string; poolAddresses?: Set<string>; burnAddresses?: Set<string> } = {},
+  opts: {
+    creator?: string;
+    relatedWallets?: Set<string>;
+    poolAddresses?: Set<string>;
+    burnAddresses?: Set<string>;
+  } = {},
 ): HolderKind {
-  const { creator, poolAddresses, burnAddresses = BURN_ADDRESSES } = opts;
+  const { creator, relatedWallets, poolAddresses, burnAddresses = BURN_ADDRESSES } = opts;
   const addr = holder.address ?? '';
   // 优先级原则：**链上确认的事实 > 文本启发式**。
   // 池标签只是拿地址/标签字符串正则碰运气，而 custody 是从链上反查出来的
@@ -59,6 +74,7 @@ export function classifyHolder(
   if (holder.custody) return 'custody';
   if (POOL_LABEL_PATTERN.test(addr) || POOL_LABEL_PATTERN.test(holder.label ?? '')) return 'pool';
   if (creator && addr === creator) return 'dev';
+  if (relatedWallets?.has(addr)) return 'related';
   if (holder.isSniper) return 'sniper';
   return 'retail';
 }
@@ -91,10 +107,17 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   }
 
   const poolAddresses = new Set(data.liquidity?.poolAddresses ?? []);
+  // 与部署者关联的钱包：创建交易的付款方 + 给 creator 首笔交易出资的钱包。
+  // 只是**标注**，不剔除 —— 它们能随时卖出。
+  const relatedWallets = new Set(
+    [data.developer?.launchWallet, ...(data.developer?.linkedWallets ?? [])].filter(
+      (x): x is string => typeof x === 'string' && x.length > 0,
+    ),
+  );
   const classified = raw
     .map((h) => {
       const pct = h.pct ?? (supply > 0 ? (h.amount / supply) * 100 : 0);
-      return { ...h, pct, kind: classifyHolder(h, { creator, poolAddresses }) };
+      return { ...h, pct, kind: classifyHolder(h, { creator, relatedWallets, poolAddresses }) };
     })
     // 按持仓从大到小排，保证 Top10 取的是真正的前十
     .sort((a, b) => b.pct - a.pct);
@@ -105,6 +128,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     timelock: 0,
     custody: 0,
     dev: 0,
+    related: 0,
     sniper: 0,
     retail: 0,
   };
@@ -119,10 +143,11 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   const circulating = classified.filter((h) => !isExcludedKind(h.kind));
   const top10Pct = circulating.slice(0, 10).reduce((s, h) => s + h.pct, 0);
   const largest = circulating[0];
-  // 只有 dev 本人（链上确认的 creator 地址）。
-  // 「团队关联钱包」需要链上资金图谱佐证，当前没有数据源，因此不猜。
+  // dev 本人（链上确认的 creator 地址）＋ 与部署者关联的钱包。
+  // ⚠️「关联」只采信链上事实：出钱发币的付款方、给 creator 首笔交易出资的钱包。
+  // 更远的「团队钱包」需要资金图谱佐证，没有数据源就不猜。
   const devClusterPct = circulating
-    .filter((h) => h.kind === 'dev')
+    .filter((h) => h.kind === 'dev' || h.kind === 'related')
     .reduce((s, h) => s + h.pct, 0);
   const sniperPct = circulating.filter((h) => h.kind === 'sniper').reduce((s, h) => s + h.pct, 0);
 
@@ -187,6 +212,34 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   const timelockPct = byKind.timelock;
   const otherCustodyPct = byKind.custody;
 
+  // ── 前 20 大持仓明细：把分类结果逐行交给 UI ──────────────────────
+  // 链上 RPC 只返回前 20 个账户，这份明细就是「能核对到的全部」，
+  // 更深的分布需要索引器 —— 这句话必须跟着这份表一起出现。
+  //
+  // ⚠️ 只取前 20 行有个坑：如果前 20 个账户里被剔除的（池/销毁/锁仓）太多，
+  // 「计入集中度」的行就不够 10 行，读者用这张表**加不出** Top10 ——
+  // 界面上那句「Top10 = 下表计入的前 10 行合计」就成了假等式。
+  // 所以必要时往后补几行，保证计入的行至少 10 行。
+  const toRow = (h: (typeof classified)[number]): HolderRow => ({
+    address: h.address,
+    amount: h.amount,
+    pct: h.pct,
+    kind: h.kind,
+    counted: !isExcludedKind(h.kind),
+    ...(h.label ? { label: h.label } : {}),
+    ...(h.custody ? { custody: { kind: h.custody.kind, label: h.custody.label } } : {}),
+  });
+  const topHolders: HolderRow[] = (() => {
+    const rows = classified.slice(0, 20).map(toRow);
+    const shown = rows.filter((r) => r.counted).length;
+    if (shown >= 10) return rows;
+    const extra = classified
+      .slice(20)
+      .filter((h) => !isExcludedKind(h.kind))
+      .slice(0, 10 - shown);
+    return [...rows, ...extra.map(toRow)];
+  })();
+
   if (timelockPct > 0) {
     const locks = custodyList.filter((c) => c.kind === 'timelock');
     add(
@@ -213,10 +266,23 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     );
   }
 
+  const devPct = circulating.filter((h) => h.kind === 'dev').reduce((s, h) => s + h.pct, 0);
+  const relatedPct = circulating.filter((h) => h.kind === 'related').reduce((s, h) => s + h.pct, 0);
   if (devClusterPct > t.devClusterDanger) {
-    add('high', 'dev 持仓偏高', `creator 地址持有流通盘 ${devClusterPct.toFixed(1)}%（阈值 ${t.devClusterDanger}%）。`);
+    add(
+      'high',
+      'dev 持仓偏高',
+      `creator 地址持有流通盘 ${devPct.toFixed(1)}%、与部署者关联的钱包持有 ${relatedPct.toFixed(1)}%，` +
+        `合计 ${devClusterPct.toFixed(1)}%（阈值 ${t.devClusterDanger}%）。`,
+    );
   } else if (devClusterPct > 0) {
-    add('good', 'dev 持仓在合理范围', `creator 地址持有 ${devClusterPct.toFixed(1)}%。`);
+    add(
+      'good',
+      'dev 持仓在合理范围',
+      `creator 地址持有 ${devPct.toFixed(1)}%` +
+        (relatedPct > 0 ? `，关联钱包持有 ${relatedPct.toFixed(1)}%` : '') +
+        `，合计 ${devClusterPct.toFixed(1)}%。`,
+    );
   }
 
   if (sniperPct > t.sniperWalletDanger) {
@@ -249,6 +315,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       circulatingCount: circulating.length,
       byKind,
       custody: custodyList,
+      topHolders,
       timelockPct,
       otherCustodyPct,
     },

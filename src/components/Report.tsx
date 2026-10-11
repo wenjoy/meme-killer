@@ -5,6 +5,7 @@ import type {
   CustodyMetric,
   DimensionResult,
   Finding,
+  HolderRow,
   LargeSellEvidence,
   ScanReport,
 } from '@/core/types';
@@ -419,6 +420,7 @@ export function Report({ report }: { report: ScanReport }) {
       </section>
 
       <CustodySection report={report} />
+      <TopHoldersSection report={report} />
 
       <LargeSellsSection report={report} />
 
@@ -644,6 +646,108 @@ function CustodySection({ report }: { report: ScanReport }) {
             <span className="text-warn">仍然计入集中度</span>，只是单独列出。
           </>
         )}
+      </p>
+    </section>
+  );
+}
+
+/**
+ * 前 20 大持仓明细。
+ *
+ * 用户要求：集中度那里要把 Top20 列出来。
+ * 为什么必须逐行列出：`Top10 = 62.9%` 独自出现时读者无法核对 ——
+ * 这个表把每个地址的分类（池/销毁/锁仓/托管/dev/狙击/散户）与**是否计入集中度**
+ * 都写清楚，读者可以自己把「计入集中度」的前 10 行加一遍，看是不是那个数。
+ */
+function TopHoldersSection({ report }: { report: ScanReport }) {
+  const m = report.dimensions.holders?.metrics;
+  const rows = Array.isArray(m?.topHolders) ? (m.topHolders as HolderRow[]) : [];
+  if (rows.length === 0) return null;
+
+  const KIND_LABEL: Record<HolderRow['kind'], string> = {
+    pool: '流动性池',
+    burn: '销毁地址',
+    timelock: '时间锁仓',
+    custody: '程序托管',
+    dev: 'creator 本人',
+    related: '与部署者关联',
+    sniper: '狙击仓位',
+    retail: '散户',
+  };
+  const countedTop10 = rows.filter((r) => r.counted).slice(0, 10);
+  const countedSum = countedTop10.reduce((s, r) => s + r.pct, 0);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-ink-300">前 20 大持仓（链上能拿到的全部）</h2>
+        <span className="font-mono text-[10px] text-ink-500">
+          Top10 集中度 {num(m?.top10Pct)}% = 下表「计入」的前 {countedTop10.length} 行合计 {num(countedSum)}%
+        </span>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-ink-700">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-ink-900/60 text-ink-400">
+            <tr>
+              <th className="px-2 py-2 font-medium">#</th>
+              <th className="px-3 py-2 font-medium">地址</th>
+              <th className="px-3 py-2 text-right font-medium">数量</th>
+              <th className="px-3 py-2 text-right font-medium">占总供应</th>
+              <th className="px-3 py-2 font-medium">分类</th>
+              <th className="px-3 py-2 font-medium">计入集中度</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-800">
+            {rows.map((h, i) => (
+              <tr key={h.address} className={h.counted ? 'bg-ink-950/40' : 'bg-ink-900/30 text-ink-400'}>
+                <td className="px-2 py-2 font-mono text-ink-500">{i + 1}</td>
+                <td className="px-3 py-2 font-mono">
+                  <a
+                    href={`https://solscan.io/account/${h.address}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-ink-200 underline decoration-ink-700 hover:text-safe"
+                    title={h.address}
+                  >
+                    {shortAddr(h.address)}
+                  </a>
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-ink-300">{num(h.amount)}</td>
+                <td className="px-3 py-2 text-right font-mono text-ink-200">{num(h.pct)}%</td>
+                <td className="px-3 py-2">
+                  <span
+                    className={
+                      h.kind === 'dev'
+                        ? 'text-danger'
+                        : h.kind === 'related' || h.kind === 'sniper'
+                          ? 'text-warn'
+                          : h.counted
+                            ? 'text-ink-300'
+                            : 'text-ink-400'
+                    }
+                  >
+                    {KIND_LABEL[h.kind]}
+                  </span>
+                  {h.label && <span className="ml-1 text-ink-500">（{h.label}）</span>}
+                </td>
+                <td className="px-3 py-2">
+                  {h.counted ? (
+                    '是'
+                  ) : (
+                    <span className="text-ink-500">
+                      否（{h.kind === 'pool' ? '池持仓' : h.kind === 'burn' ? '已销毁' : '锁仓未解锁'}）
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] leading-relaxed text-ink-400">
+        链上 RPC 只返回前 20 大持仓账户；更深的分布需要索引器，所以这 20 行是**能核对到的全部**，
+        不代表只有 20 个持有人。「计入集中度 = 否」的三类（池、销毁、锁仓）已从 Top10 与巨鲸判断中剔除，
+        托管（多签）不剔除 —— 它可以随时签名转出。
       </p>
     </section>
   );

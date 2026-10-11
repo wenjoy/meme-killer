@@ -381,7 +381,12 @@ export interface DimensionResult {
   findings: Finding[];
   metrics?: Record<
     string,
-    number | string | Record<string, number> | CustodyMetric[] | LargeSellEvidence[]
+    | number
+    | string
+    | Record<string, number>
+    | CustodyMetric[]
+    | LargeSellEvidence[]
+    | HolderRow[]
   >;
   error?: string;
 }
@@ -416,6 +421,28 @@ export interface LargeSellEvidence {
 }
 
 /** 供 UI 直接渲染的托管持仓列表项 */
+/**
+ * 供 UI 直接渲染的持仓明细（前 20 大，链上 RPC 能给的全部）。
+ *
+ * 为什么要把原始地址与数量都透出来：`Top10 = 62.9%` 只是个数字，
+ * 读者没法核对「被剔除的到底是哪些地址、剔除后剩的是哪些」。
+ * 把分类结果逐行列出，集中度这个数字才能被自己加一遍验证。
+ */
+export interface HolderRow {
+  address: string;
+  /** 持仓数量（UI 单位） */
+  amount: number;
+  /** 占总供应量百分比（分母是总量，不是流通量 —— 便于和剔除比例对照） */
+  pct: number;
+  kind: 'pool' | 'burn' | 'timelock' | 'custody' | 'dev' | 'related' | 'sniper' | 'retail';
+  /** 是否计入集中度（池 / 销毁 / 锁仓被剔除） */
+  counted: boolean;
+  /** 标签，例如「Raydium AMM Pool」「Jupiter Lock」 */
+  label?: string;
+  /** 该仓位是否由程序控制（锁仓/多签/托管），UI 用来标注 */
+  custody?: { kind: CustodyKind; label: string };
+}
+
 export interface CustodyMetric {
   address: string;
   kind: CustodyKind;

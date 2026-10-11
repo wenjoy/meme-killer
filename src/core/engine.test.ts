@@ -25,7 +25,7 @@ import {
   openMintInput,
   rugInput,
 } from './fixtures.ts';
-import type { RawHolder, ScanInput } from './types.ts';
+import type { HolderRow, RawHolder, ScanInput } from './types.ts';
 
 const meta = {
   source: 'test',
@@ -1271,4 +1271,91 @@ test('门槛卡在全池占比上：销毁 96% 的池子里拿住剩下那点 LP
     undefined,
     '只占全池 3% 时不能报成「关联钱包持有 LP」，那是把小数字放大成警报',
   );
+});
+
+// ── 前 20 大持仓明细：集中度这个数字必须能被读者自己加出来 ────────
+test('Top20 明细：分类、是否计入、以及 Top10 能不能被加出来', () => {
+  const r = analyzeHolders(
+    input({
+      token: { mint: 'M', symbol: 'T', supply: 1000 },
+      developer: { creator: 'devaddr' },
+      holders: [
+        { address: 'pool', amount: 300, pct: 30, isPool: true },
+        { address: 'burn', amount: 100, pct: 10, isBurn: true },
+        { address: 'devaddr', amount: 80, pct: 8 },
+        { address: 'sniper1', amount: 60, pct: 6, isSniper: true },
+        ...Array.from({ length: 8 }, (_, i) => ({ address: `r${i}`, amount: 40 - i, pct: 4 - i * 0.1 })),
+        { address: 'r8', amount: 20, pct: 2 },
+        { address: 'r9', amount: 10, pct: 1 },
+      ],
+    }),
+  );
+  const rows = r.metrics!.topHolders as HolderRow[];
+  assert.equal(rows.length, 14, '链上给了几只就列几只');
+  assert.equal(rows[0].kind, 'pool');
+  assert.equal(rows[0].counted, false, '池子不计入集中度');
+  assert.equal(rows[1].kind, 'burn');
+  assert.equal(rows.find((x) => x.address === 'devaddr')!.kind, 'dev', 'creator 本人要标出来');
+  assert.equal(rows.find((x) => x.address === 'sniper1')!.kind, 'sniper');
+  assert.deepEqual(
+    rows.map((x) => x.pct),
+    [...rows.map((x) => x.pct)].sort((a, b) => b - a),
+    '明细必须按持仓从大到小，否则「前 10 行」没有意义',
+  );
+
+  // 关键：读者把「计入」的前 10 行加起来，必须正好等于 Top10 集中度
+  const counted10 = rows.filter((x) => x.counted).slice(0, 10);
+  const sum = counted10.reduce((s, x) => s + x.pct, 0);
+  assert.equal(counted10.length, 10);
+  assert.ok(
+    Math.abs(sum - Number(r.metrics!.top10Pct)) < 1e-9,
+    `计入的前 10 行合计 ${sum} 应等于 top10Pct ${r.metrics!.top10Pct}`,
+  );
+});
+
+test('前 20 行里被剔除的太多时，要往后补行，保证「计入」的行够 10 行', () => {
+  const r = analyzeHolders(
+    input({
+      token: { mint: 'M', symbol: 'T', supply: 1000 },
+      holders: [
+        ...Array.from({ length: 15 }, (_, i) => ({ address: `pool${i}`, amount: 50, pct: 5, isPool: true })),
+        ...Array.from({ length: 12 }, (_, i) => ({ address: `r${i}`, amount: 10, pct: 1 })),
+      ],
+    }),
+  );
+  const rows = r.metrics!.topHolders as HolderRow[];
+  const counted10 = rows.filter((x) => x.counted).slice(0, 10);
+  assert.equal(counted10.length, 10, '补行之后必须够 10 行，否则界面上那个等式不成立');
+  assert.ok(rows.length > 20, '补出来的行数可以超过 20');
+  const sum = counted10.reduce((s, x) => s + x.pct, 0);
+  assert.ok(Math.abs(sum - Number(r.metrics!.top10Pct)) < 1e-9);
+});
+
+test('创建交易的付款方要标成「与部署者关联」，不能显示成散户', () => {
+  // 实测 9raUVuze…pump：付款方 4JBz4tAK… 持有 0.37% 代币 + 10.8% 全池 LP，
+  // 它出钱发币、还给 creator 的首笔交易充值 —— 显示成散户会低估这条筹码
+  const r = analyzeHolders(
+    input({
+      token: { mint: 'M', symbol: 'T', supply: 1000 },
+      developer: {
+        creator: 'curvecreator',
+        creatorSource: 'curve',
+        launchWallet: 'feepayer',
+        linkedWallets: ['feepayer', 'someoneelse'],
+      },
+      holders: [
+        { address: 'curvecreator', amount: 50, pct: 5 },
+        { address: 'feepayer', amount: 30, pct: 3 },
+        { address: 'someoneelse', amount: 20, pct: 2 },
+        { address: 'retail1', amount: 10, pct: 1 },
+      ],
+    }),
+  );
+  const rows = r.metrics!.topHolders as HolderRow[];
+  const byAddr = new Map(rows.map((x) => [x.address, x]));
+  assert.equal(byAddr.get('curvecreator')!.kind, 'dev');
+  assert.equal(byAddr.get('feepayer')!.kind, 'related');
+  assert.equal(byAddr.get('someoneelse')!.kind, 'related', '给 creator 出资的钱包也算关联');
+  assert.equal(byAddr.get('feepayer')!.counted, true, '关联钱包能随时卖出，必须计入集中度');
+  assert.equal(Number(r.metrics!.devClusterPct), 10, 'dev 与关联钱包要合起来看');
 });
