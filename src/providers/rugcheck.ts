@@ -54,7 +54,23 @@ interface RugLp {
   baseUSD?: number;
   quoteUSD?: number;
   lpLockedUSD?: number;
+  /** 已锁定的 LP 数量（最小单位） */
+  lpLocked?: number;
+  /** **未**锁定且未销毁的 LP 数量（最小单位）—— 能被持有人提走的那部分 */
+  lpUnlocked?: number;
+  lpTotalSupply?: number;
   holders?: RugLpHolder[];
+}
+
+/** RugCheck 的 lockers 表：锁仓合约地址 → 合约详情 */
+interface RugLocker {
+  programID?: string;
+  tokenAccount?: string;
+  owner?: string;
+  uri?: string;
+  /** 解锁时间（unix 秒） */
+  unlockDate?: number;
+  type?: string;
 }
 
 interface RugMarket {
@@ -76,6 +92,7 @@ export interface RugReport {
   rugged?: boolean;
   risks?: { name?: string; level?: string; value?: string }[];
   knownAccounts?: Record<string, { name?: string; type?: string } | undefined>;
+  lockers?: Record<string, RugLocker>;
 }
 
 export interface RugCheckResult {
@@ -183,6 +200,68 @@ export function mapRugCheckReport(report: RugReport): Omit<RugCheckResult, 'orig
       lpInfo.lockedPct = 100;
     }
 
+    // ── 证据：未锁部分占比 + LP 持有者明细 ──────────────────────
+    // 「未锁定也未销毁」这条结论不能只有一句判断，必须带上可核对的原始数字：
+    // 未锁占比是多少、这些 LP 凭证在谁手里（RugCheck 的 knownAccounts 会标注
+    // Creator / LOCKER 等身份）。否则「项目方随时可撤池」就是没有依据的断言。
+    const unlockedTokens = typeof lp.lpUnlocked === 'number' ? lp.lpUnlocked : undefined;
+    const lpSupply = typeof lp.lpTotalSupply === 'number' && lp.lpTotalSupply > 0 ? lp.lpTotalSupply : undefined;
+    if (unlockedTokens !== undefined && lpSupply !== undefined) {
+      lpInfo.unlockedPct = (unlockedTokens / lpSupply) * 100;
+    } else if (typeof lockedPct === 'number' || typeof burnedPct === 'number') {
+      lpInfo.unlockedPct = Math.max(0, 100 - Math.max(lockedPct ?? 0, burnedPct ?? 0));
+    }
+
+    // ⚠️ 关键修正：`lpUnlocked` 不等于「可随时撤走」。
+    // 实测 `AVKpeeWa…pump`（lpLockedPct 68.3%）与 `BdzaE3T7…pump`（50.6%）：
+    // 未锁的那部分 LP 全部躺在 Streamflow 线性解锁合约里，持有人是 LOCKER 账户 ——
+    // 它们不能立刻全额提走（逐步解锁），只是「还没锁到 RugCheck 的 locked 口径」。
+    // 把这段算成撤池风险会冤枉项目方，所以按持有人身份再拆一刀。
+    const lockersByAccount = new Map<string, RugLocker>();
+    for (const entry of Object.values(report.lockers ?? {})) {
+      if (!entry) continue;
+      if (entry.tokenAccount) lockersByAccount.set(entry.tokenAccount, entry);
+      if (entry.owner) lockersByAccount.set(entry.owner, entry);
+    }
+    const lockerOf = (owner: string): RugLocker | undefined =>
+      known[owner]?.type === 'LOCKER' ? (lockersByAccount.get(owner) ?? {}) : lockersByAccount.get(owner);
+    const unlockAtOf = (entry: RugLocker | undefined): string | undefined => {
+      const sec = entry?.unlockDate;
+      if (typeof sec !== 'number' || !Number.isFinite(sec) || sec <= 0) return undefined;
+      const d = new Date(sec * 1000);
+      return Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+    };
+
+    // ⚠️ 这里刻意**不做加减法**：RugCheck 的 `lpUnlocked` 与 `holders[]` 并不是
+    // 一套自洽的账。实测 `BdzaE3T7…pump`：lpUnlocked = 49.4%，但持有者明细里
+    // 锁仓合约就占 50.6%（正好等于 lpLockedPct），其余 49% 不对应任何可见账户
+    // （多半已销毁或由 AMM 自身持有）。用 `unlocked − locker` 会算出负数或
+    // 自相矛盾的结论，所以两个占比各自独立统计、各自署上来源。
+    const lockerPct = holders
+      .filter((h) => lockerOf(h.owner!))
+      .reduce((sum, h) => sum + (h.pct ?? 0), 0);
+    if (lockerPct > 0) lpInfo.lockerPct = lockerPct;
+    // 可自由提走 = 普通钱包持有（既不是锁仓合约，也不是销毁地址）
+    lpInfo.withdrawablePct = holders
+      .filter((h) => !lockerOf(h.owner!) && !BURN_ADDRESSES.has(h.owner!))
+      .reduce((sum, h) => sum + (h.pct ?? 0), 0);
+
+    if (holders.length > 0) {
+      lpInfo.lpHolders = holders.slice(0, 3).map((h) => {
+        const locker = lockerOf(h.owner!);
+        const unlockAt = unlockAtOf(locker);
+        return {
+          owner: h.owner!,
+          pct: h.pct ?? 0,
+          ...(known[h.owner!]?.name || known[h.owner!]?.type || locker
+            ? { label: known[h.owner!]?.name ?? known[h.owner!]?.type ?? locker?.type }
+            : {}),
+          ...(locker ? { isLocker: true } : {}),
+          ...(unlockAt ? { unlockAt } : {}),
+        };
+      });
+    }
+
     if (lpInfo.burned !== true) {
       if (lpInfo.locked === true) {
         const locker = holders
@@ -190,10 +269,13 @@ export function mapRugCheckReport(report: RugReport): Omit<RugCheckResult, 'orig
           .find((k) => k?.type === 'LOCKER');
         if (locker?.name) lpInfo.locker = locker.name;
       } else if (lpInfo.locked === false) {
-        // 已确认未锁定：单一持有者就是「随时可撤池」的那个地址
-        if (holders.length === 1 && (top?.pct ?? 0) >= LOCKED_PCT) {
+        // 已确认未锁定：单一「可自由撤走」的持有者才是随时可撤池的那个地址。
+        // 锁仓/线性解锁账户不算 —— 它不能立刻全额提走。
+        const freeHolders = holders.filter((h) => !lockerOf(h.owner!));
+        const topFree = freeHolders[0];
+        if (freeHolders.length === 1 && (topFree?.pct ?? 0) >= LOCKED_PCT) {
           lpInfo.singleHolder = true;
-          lpInfo.holder = top!.owner;
+          lpInfo.holder = topFree!.owner;
         }
       }
     }

@@ -137,6 +137,36 @@ export function analyzeContract(data: ScanInput): DimensionResult {
   // high 风险。现在数据由 providers/rugcheck.ts 提供，未知仍然是未知。
   const lp = c.lp ?? {};
   const lockPct = lp.lockedPct !== undefined ? `锁定/销毁比例 ${lp.lockedPct.toFixed(1)}%` : '';
+  /**
+   * 把 RugCheck 的 LP 持有者明细渲染成可核对的证据文本。
+   *
+   * 为什么必须带上：`lpLockedPct = 62.9%` 只说明「有一部分没锁」，
+   * 并不说明是谁持有那部分。没有这份明细时，报告无权说「项目方可撤池」，
+   * 只能说「存在未锁部分，持有人不明」。
+   */
+  const lpEvidence = (lp.lpHolders ?? [])
+    .map(
+      (h) =>
+        `${h.owner.slice(0, 4)}…${h.owner.slice(-4)}` +
+        `${h.label ? `（RugCheck 标注：${h.label}）` : ''} ${h.pct.toFixed(1)}%` +
+        // 锁仓账户必须带上解锁时间：没有它，「逐步解锁」就只是一句没有信息量的话
+        `${h.isLocker && h.unlockAt ? `（解锁 ${h.unlockAt}）` : ''}`,
+    )
+    .join('、');
+  // ⚠️ 两个口径不一定对得上，对不上时只能说「对不上」。
+  // 实测 `BdzaE3T7…pump`：RugCheck 说锁定 50.6%、未锁 49.4%，
+  // 但链上持有者明细合计 50.9%（其中锁仓合约 50.6%）—— 差额 1.5% 无法解释。
+  // 遇到这种情况**不做推断**（既不把差额算成风险，也不算成安全），只如实说明。
+  // 而 `AVKpeeWa…pump` 两边正好吻合（31.7% vs 31.7%），不会触发这条提示。
+  const holderSumPct = (lp.lockerPct ?? 0) + (lp.withdrawablePct ?? 0);
+  const accountGapPct =
+    lp.lockedPct !== undefined && holderSumPct > 0 ? Math.abs(100 - lp.lockedPct - holderSumPct) : 0;
+  const accountGapNote =
+    accountGapPct > 1
+      ? `⚠️ RugCheck 的锁定比例与链上持有者明细对不上：明细合计 ${holderSumPct.toFixed(1)}%，` +
+        `而按锁定比例推算应为 ${(100 - (lp.lockedPct ?? 0)).toFixed(1)}%（差 ${accountGapPct.toFixed(1)}%）。` +
+        '这可能来自索引未覆盖全部持有者，差额部分本工具不做推断 —— 请以链上 LP mint 的实际持有为准。'
+      : '';
   if (lp.exists === false) {
     add('medium', '尚未建立 LP', '仍在 bonding curve 阶段，没有真实流动性池。');
   } else if (lp.burned) {
@@ -158,14 +188,41 @@ export function analyzeContract(data: ScanInput): DimensionResult {
   } else if (lp.singleHolder) {
     veto(
       'LP 未锁未销毁',
-      `LP 由单一地址 ${lp.holder ?? '未知'} 持有${lockPct ? `（${lockPct}）` : ''}，` +
-        '该地址可随时撤走全部流动性跑路。',
+      `LP 未锁未销毁，且由单一地址 ${lp.holder ?? '未知'} 持有${lockPct ? `（${lockPct}）` : ''}，` +
+        '该地址可随时撤走全部流动性。' +
+        (lpEvidence ? `RugCheck 记录的 LP 持有者：${lpEvidence}。` : ''),
     );
-  } else if (lp.locked === false || lp.burned === false) {
+  } else if ((lp.lockerPct ?? 0) > 0 && (lp.withdrawablePct ?? 0) < THRESHOLDS.contract.lpWithdrawableDangerPct) {
+    // 未锁部分主要是锁仓/线性解锁合约（实测两个真实代币都是 Streamflow）。
+    // 这部分不能立刻全额提走，判成「随时撤池」是冤枉人；但解锁后就能提，
+    // 所以也不能说成「已锁定」——给中间结论，并把数字与解锁时间都摆出来。
+    add(
+      'medium',
+      'LP 未销毁，未锁部分主要在锁仓程序里',
+      `RugCheck 实测${lockPct ? `：${lockPct}` : ''}` +
+        `；链上核对到 ${(lp.lockerPct ?? 0).toFixed(1)}% 的 LP 由锁仓/线性解锁合约持有，` +
+        `普通钱包可随时提走的仅约 ${(lp.withdrawablePct ?? 0).toFixed(2)}%。` +
+        (lpEvidence ? `LP 持有者：${lpEvidence}。` : '') +
+        accountGapNote +
+        '⚠️ 锁仓会按计划逐步解锁，解锁后即可提走 —— 请留意解锁时间，别把它当成永久锁定。',
+    );
+  } else if ((lp.withdrawablePct ?? 0) >= THRESHOLDS.contract.lpWithdrawableDangerPct || lp.locked === false || lp.burned === false) {
+    // ⚠️ 措辞严格对齐证据：
+    // 「能撤走多少」优先只认 withdrawablePct（链上核对到的**普通钱包**持仓），
+    // 而不是 RugCheck 的 `unlockedPct` —— 后者可能包含锁仓合约或不存在的账户。
     add(
       'high',
       'LP 未锁定也未销毁',
-      `已核实 LP 既未锁定也未销毁${lockPct ? `（${lockPct}）` : ''}，项目方随时可以撤走流动性。`,
+      `RugCheck 实测${lockPct ? `：${lockPct}` : ''}` +
+        (lp.withdrawablePct !== undefined
+          ? `；链上核对到其中 ${lp.withdrawablePct.toFixed(1)}% 的 LP 由普通钱包持有，` +
+            '这些地址可以随时提走对应流动性。'
+          : '；RugCheck 判定其既未锁定也未销毁，但本次没拿到 LP 持有者明细，' +
+            '无法确认可撤的那部分在谁手里。') +
+        accountGapNote +
+        (lpEvidence
+          ? `RugCheck 记录的 LP 持有者：${lpEvidence} —— 请按此核对可撤部分在谁手里。`
+          : '⚠️ 没有持有者明细时不要默认是项目方。'),
     );
   } else if (lp.exists === true) {
     // 确认存在 LP，但锁仓状态查不到 —— 这是风险，不是安全

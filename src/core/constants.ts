@@ -91,6 +91,9 @@ export const THRESHOLDS = {
   },
   contract: {
     maxTransferFeeBps: 0, // 任何 > 0 的转移税都警惕
+    // 未锁部分的 LP 里，能被普通钱包「随时提走」的比例低于此值 → 主要是锁仓托管，
+    // 不算撤池风险（但仍会列出来，因为线性解锁到期后就能提）。
+    lpWithdrawableDangerPct: 5,
   },
 } as const;
 

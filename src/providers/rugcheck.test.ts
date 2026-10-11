@@ -167,3 +167,169 @@ test('LP mint 还是零地址（索引未完成）时，整体按未知处理，
   assert.equal(r.lp?.singleHolder, undefined);
   assert.ok(r.warnings.some((w) => w.includes('索引未完成')));
 });
+
+test('部分锁定（62.9%）时要同时给出「未锁占比」与 LP 持有者明细', () => {
+  // 用户实际看到的场景：lpLockedPct = 62.9%。
+  // 这条结论不能只有一句「未锁定也未销毁」——必须能核对「没锁的那 37.1% 在谁手里」。
+  const r = mapRugCheckReport({
+    markets: [
+      {
+        pubkey: 'Pool4444444444444444444444444444444444444444',
+        marketType: 'meteora',
+        mintLP: 'LPMintPartial111111111111111111111111111111',
+        lp: {
+          lpLockedPct: 62.9,
+          lpLocked: 629_000_000n as unknown as number,
+          lpUnlocked: 371_000_000n as unknown as number,
+          lpTotalSupply: 1_000_000_000n as unknown as number,
+          baseUSD: 50000,
+          quoteUSD: 50000,
+          holders: [
+            { owner: 'LockerAccount111111111111111111111111111111', pct: 62.9 },
+            { owner: 'CreatorWallet1111111111111111111111111111111', pct: 37.1 },
+          ],
+        },
+      },
+    ],
+    knownAccounts: {
+      LockerAccount111111111111111111111111111111: { name: 'Streamflow', type: 'LOCKER' },
+      CreatorWallet1111111111111111111111111111111: { name: 'Creator', type: 'CREATOR' },
+    },
+  });
+
+  assert.equal(r.lp?.locked, false, '62.9% 未达 95% 阈值 → 未锁定');
+  assert.equal(r.lp?.burned, undefined, '没有销毁依据就不能说已销毁');
+  assert.equal(r.lp?.lockedPct, 62.9);
+  assert.ok(
+    Math.abs((r.lp?.unlockedPct ?? 0) - 37.1) < 1e-6,
+    `未锁占比应由 lpUnlocked/lpTotalSupply 精确算出，实际 ${r.lp?.unlockedPct}`,
+  );
+  assert.deepEqual(
+    r.lp?.lpHolders?.map((h) => [h.owner.slice(0, 6), h.pct, h.label]),
+    [
+      ['Locker', 62.9, 'Streamflow'],
+      ['Creato', 37.1, 'Creator'],
+    ],
+  );
+});
+
+test('拿不到 lpUnlocked 时用比例相减兜底，仍然给出未锁占比', () => {
+  const r = mapRugCheckReport({
+    markets: [
+      {
+        pubkey: 'Pool5555555555555555555555555555555555555555',
+        marketType: 'raydium',
+        mintLP: 'LPMintPartial222222222222222222222222222222',
+        lp: { lpLockedPct: 62.9, holders: [] },
+      },
+    ],
+  });
+  assert.ok(Math.abs((r.lp?.unlockedPct ?? 0) - 37.1) < 1e-6);
+  assert.equal(r.lp?.lpHolders, undefined, '没有持有者明细就不写明细');
+});
+
+// ── 真实案例：未锁的 LP 其实躺在 Streamflow 线性解锁合约里 ──────────
+// 两个真实代币（AVKpeeWa…pump 锁 68.3%、BdzaE3T7…pump 锁 50.6%）的「未锁」部分
+// 全部由 Streamflow Vault 持有。把这段算成「随时可撤池」是冤枉项目方，
+// 因此必须按持有人身份再拆成「锁仓托管」与「可自由提走」。
+const STREAMFLOW = 'strmRqUCoQUgGUan5YhzUZa6KqdzwX5L6FpUxfmKg5m';
+
+test('未锁部分由锁仓合约持有时，要拆出 lockerPct / withdrawablePct', () => {
+  const r = mapRugCheckReport({
+    markets: [
+      {
+        pubkey: 'Pool6666666666666666666666666666666666666666',
+        marketType: 'pump_fun_amm',
+        mintLP: 'LPMintStreamflow11111111111111111111111111',
+        lp: {
+          lpLockedPct: 68.34,
+          lpLocked: 4193388288181,
+          lpUnlocked: 1942656566183,
+          lpTotalSupply: 6136044854364,
+          baseUSD: 21983,
+          quoteUSD: 21983,
+          holders: [
+            { owner: 'StreamflowVault66666666666666666666666666666', pct: 31.5 },
+            { owner: 'RandomWallet777777777777777777777777777777', pct: 0.157 },
+          ],
+        },
+      },
+    ],
+    knownAccounts: {
+      StreamflowVault66666666666666666666666666666: { name: 'Streamflow Vault', type: 'LOCKER' },
+    },
+    lockers: {
+      'Contract11111111111111111111111111111111111': {
+        programID: STREAMFLOW,
+        tokenAccount: 'StreamflowVault66666666666666666666666666666',
+        owner: STREAMFLOW,
+        unlockDate: 1822366800,
+        type: 'streamflow',
+      },
+    },
+  });
+
+  assert.equal(r.lp?.locked, false, '68.34% 未达 95% → 未达「已锁定」口径');
+  assert.ok(Math.abs((r.lp?.unlockedPct ?? 0) - 31.66) < 0.01);
+  assert.ok(Math.abs((r.lp?.lockerPct ?? 0) - 31.5) < 1e-6, '锁仓合约持有 31.5%');
+  assert.ok(
+    Math.abs((r.lp?.withdrawablePct ?? 0) - 0.16) < 0.01,
+    `真正可自由提走的只有约 0.16%，实际 ${r.lp?.withdrawablePct}`,
+  );
+  assert.equal(r.lp?.lpHolders?.[0].isLocker, true);
+  assert.equal(r.lp?.lpHolders?.[0].label, 'Streamflow Vault');
+  assert.equal(
+    r.lp?.lpHolders?.[0].unlockAt,
+    new Date(1822366800 * 1000).toISOString().slice(0, 10),
+    '解锁时间要透出来，否则用户无从判断什么时候能撤',
+  );
+  assert.equal(r.lp?.lpHolders?.[1].isLocker, undefined, '普通钱包不标记为锁仓');
+});
+
+test('LP 全在锁仓合约里时，不能判成「单一地址可随时撤池」', () => {
+  const r = mapRugCheckReport({
+    markets: [
+      {
+        pubkey: 'Pool7777777777777777777777777777777777777777',
+        marketType: 'pump_fun_amm',
+        mintLP: 'LPMintAllLocked111111111111111111111111111',
+        lp: {
+          lpLockedPct: 50,
+          lpLocked: 50,
+          lpUnlocked: 50,
+          lpTotalSupply: 100,
+          holders: [{ owner: 'StreamflowVault66666666666666666666666666666', pct: 50 }],
+        },
+      },
+    ],
+    knownAccounts: {
+      StreamflowVault66666666666666666666666666666: { name: 'Streamflow Vault', type: 'LOCKER' },
+    },
+  });
+  assert.equal(r.lp?.singleHolder, undefined, '锁仓账户不能算「随时可撤池」的那个地址');
+});
+
+test('未锁部分全在普通钱包且集中在一个地址 → 仍然是 singleHolder 否决', () => {
+  const r = mapRugCheckReport({
+    markets: [
+      {
+        pubkey: 'Pool8888888888888888888888888888888888888888',
+        marketType: 'pump_fun_amm',
+        mintLP: 'LPMintFreeSingle11111111111111111111111111',
+        lp: {
+          lpLockedPct: 0,
+          lpLocked: 0,
+          lpUnlocked: 100,
+          lpTotalSupply: 100,
+          holders: [{ owner: 'CreatorWallet1111111111111111111111111111111', pct: 100 }],
+        },
+      },
+    ],
+    knownAccounts: {
+      CreatorWallet1111111111111111111111111111111: { name: 'Creator', type: 'CREATOR' },
+    },
+  });
+  assert.equal(r.lp?.singleHolder, true);
+  assert.equal(r.lp?.holder, 'CreatorWallet1111111111111111111111111111111');
+  assert.equal(r.lp?.withdrawablePct, 100);
+});

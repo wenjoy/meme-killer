@@ -106,6 +106,41 @@ export interface ContractInfo {
     locker?: string;
     /** 锁定或销毁的 LP 占比（%），用于说明结论的依据 */
     lockedPct?: number;
+    /**
+     * RugCheck 口径下**未**锁定也**未**销毁的 LP 占比（%）。拿不到时为 undefined。
+     *
+     * ⚠️ 它**不等于**「可随时撤走」：实测两个真实代币的这部分 LP 全部躺在
+     * Streamflow 线性解锁合约里（持有人是 LOCKER）。所以还要看下面两个字段。
+     */
+    unlockedPct?: number;
+    /**
+     * 未锁部分里由**锁仓/线性解锁程序**托管的占比（%）。
+     *
+     * 这部分凭证不能被立刻全额提走（会按计划逐步解锁），所以不能算作撤池风险；
+     * 但解锁后就能提走，也不能算作「已锁定」。
+     */
+    lockerPct?: number;
+    /**
+     * 未锁部分里属于**普通钱包、可随时提走**的占比（%）—— 真正的撤池风险敞口。
+     *
+     * 判定「项目方可撤池」只认这个数，不认 `unlockedPct`。
+     */
+    withdrawablePct?: number;
+    /**
+     * LP 凭证的持有者明细（RugCheck 按链上 LP mint 余额给出，最多取前 3）。
+     *
+     * 用于核对「未锁的那部分到底在谁手里」—— 没有这份明细就只能说
+     * 「存在未锁部分」，不能说「项目方可以撤池」。
+     */
+    lpHolders?: {
+      owner: string;
+      pct: number;
+      label?: string;
+      /** 是否为锁仓/线性解锁程序账户 */
+      isLocker?: boolean;
+      /** 锁仓的解锁时间（程序给出时才有） */
+      unlockAt?: string;
+    }[];
     /** 未锁定时，持有 ≥95% LP 的单一地址 */
     holder?: string;
     /** 未锁定/未销毁，且 LP 集中在单一地址（可随时撤池） */

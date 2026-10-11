@@ -750,3 +750,86 @@ test('持有人数未知时不得报「持有人少且集中」', () => {
   const known = analyzeHolders(input({ holders, liquidity: { holderCount: 30 } }));
   assert.ok(known.findings.some((f) => f.title === '持有人少且集中'), 'RugCheck 给了持有人数后该判断必须生效');
 });
+
+test('「LP 未锁定也未销毁」必须列出未锁占比与 LP 持有者，不得凭空指名项目方', () => {
+  // 62.9% 这个真实数字只说明「有一部分没锁」，不说明是谁持有那部分。
+  const quoted = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: {
+          exists: true,
+          locked: false,
+          burned: false,
+          lockedPct: 62.9,
+          unlockedPct: 37.1,
+          lpHolders: [
+            { owner: 'LockerAccount111111111111111111111111111111', pct: 62.9, label: 'Streamflow' },
+            { owner: 'CreatorWallet1111111111111111111111111111111', pct: 37.1, label: 'Creator' },
+          ],
+        },
+      },
+    }),
+  );
+  const f = quoted.findings.find((x) => x.title === 'LP 未锁定也未销毁')!;
+  assert.ok(f.detail.includes('62.9%'), '要给出锁定比例这个原始数字');
+  assert.ok(f.detail.includes('37.1%'), '要给出未锁占比这个直接依据');
+  assert.ok(f.detail.includes('Creator'), '要点出 RugCheck 标注的身份，让人能核对');
+  assert.ok(f.detail.includes('62.9%') && f.detail.includes('Streamflow'), '锁仓方也要列出');
+
+  // 没有持有者明细时，只能说「持有人不明」，不能断言是项目方
+  const noEvidence = analyzeContract(
+    input({
+      contract: { mintAuthority: null, freezeAuthority: null, lp: { exists: true, locked: false, lockedPct: 62.9 } },
+    }),
+  );
+  const g = noEvidence.findings.find((x) => x.title === 'LP 未锁定也未销毁')!;
+  assert.ok(!g.detail.includes('项目方随时'), '没有证据就不指名道姓');
+  assert.ok(g.detail.includes('不要默认是项目方'));
+});
+
+test('未锁 LP 由锁仓程序托管 → 报「托管中」而不是「随时可撤池」', () => {
+  const vesting = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: {
+          exists: true,
+          locked: false,
+          lockedPct: 68.34,
+          unlockedPct: 31.66,
+          lockerPct: 31.5,
+          withdrawablePct: 0.16,
+          lpHolders: [
+            { owner: 'StreamflowVault66666666666666666666666666666', pct: 31.5, label: 'Streamflow Vault', isLocker: true, unlockAt: '2027-09-30' },
+            { owner: 'RandomWallet777777777777777777777777777777', pct: 0.157 },
+          ],
+        },
+      },
+    }),
+  );
+  assert.ok(
+    !vesting.findings.some((f) => f.title === 'LP 未锁定也未销毁'),
+    '不能把锁仓合约持有的 LP 说成「未锁定也未销毁、可以撤走」',
+  );
+  const f = vesting.findings.find((x) => x.title === 'LP 未销毁，未锁部分主要在锁仓程序里')!;
+  assert.ok(f, '要给出「托管中」的中间结论');
+  assert.equal(f.severity, 'medium');
+  assert.ok(f.detail.includes('68.3%') && f.detail.includes('31.5%') && f.detail.includes('0.16%'));
+  assert.ok(f.detail.includes('Streamflow'), '点出锁仓程序，用户才能去核对');
+  assert.ok(f.detail.includes('2027-09-30'), '解锁时间必须出现');
+
+  // 可自由提走的部分够大时，仍然是 high 撤池风险
+  const freeEnough = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: { exists: true, locked: false, lockedPct: 50, unlockedPct: 50, lockerPct: 10, withdrawablePct: 40 },
+      },
+    }),
+  );
+  assert.ok(freeEnough.findings.some((f) => f.title === 'LP 未锁定也未销毁' && f.severity === 'high'));
+});
