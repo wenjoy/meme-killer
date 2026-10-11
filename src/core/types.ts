@@ -504,6 +504,8 @@ export interface HolderOverview {
   coveredPct: number;
   /** 池 / 销毁 / 锁仓合计（占总量） */
   excludedPct: number;
+  /** 流通盘（占总量）＝ 100 − excludedPct；集中度类指标的分母就是它 */
+  circulatingPct: number;
   circulatingOwners: number;
   buckets: HolderBucket[];
   curve: HolderCurvePoint[];

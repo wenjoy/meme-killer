@@ -143,7 +143,33 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   // ⚠️ custody（多签/未知托管）**不剔除** —— 它们能随时把币转出来，
   // 计入集中度才是保守且正确的做法。
   const circulating = classified.filter((h) => !isExcludedKind(h.kind));
-  const top10Pct = circulating.slice(0, 10).reduce((s, h) => s + h.pct, 0);
+
+  // ── Top10 集中度：真正的「占流通盘」──────────────────────────────
+  // ⚠️ 这里曾经算错：分子分母都用「占总供应量」算出来的数被写成「占流通盘」，
+  // 锁仓/大池的代币流通盘很薄，误差会被放大好几倍（实测某币 8.2% 实为 38.2%，
+  // 于是「持仓分布健康」把一个前十握 38% 流通盘的币放过去了）。
+  //
+  // 现在：分子 = 剔除后前 10 名持仓（占总供应量），分母 = 流通盘（总量 − 池/销毁/锁仓）。
+  // 两个数都从**全量枚举**取（分子分母同源，不会一个用一个口径）；
+  // 没加载全量时回退到前 20 名样本，并在 metrics.top10Source 上如实标注。
+  const ov = data.holdersOverview;
+  const fullTop10 = ov?.curve.find((c) => c.top === 10)?.cumPctCounted;
+  const useFull = ov !== undefined && fullTop10 !== undefined && ov.circulatingPct > 0;
+  const sampleTop10 = circulating.slice(0, 10).reduce((s, h) => s + h.pct, 0);
+  const top10PctOfSupply = useFull ? fullTop10 : sampleTop10;
+  // 分母：全量枚举给的是实测的「总量 − 剔除项」；样本口径只能用 100 − 样本剔除比例
+  const top10DenominatorPct = useFull
+    ? ov.circulatingPct
+    : Math.max(0, 100 - excludedPct);
+  const top10Pct = top10DenominatorPct > 0 ? (top10PctOfSupply / top10DenominatorPct) * 100 : 0;
+  const top10Source: 'full' | 'sample' = useFull ? 'full' : 'sample';
+  // 全量枚举的剔除比例更准（样本只有前 20 名），报告统一用它，避免同一页出现两个剔除率
+  const excludedForReport = useFull ? ov.excludedPct : excludedPct;
+  // ⚠️ 所有「占比」类阈值都走这一个换算：总量口径 → 流通盘口径。
+  // 只改 Top10 而不改巨鲸/dev/狙击，会出现同一份报告里两个 finding 口径不一致
+  // （实测就是这个坑：Top10 说 38%，dev 说 0.4%，读者会以为两个数能相加）。
+  const ofCirculating = (pctOfSupply: number) =>
+    top10DenominatorPct > 0 ? (pctOfSupply / top10DenominatorPct) * 100 : 0;
   const largest = circulating[0];
   // dev 本人（链上确认的 creator 地址）＋ 与部署者关联的钱包。
   // ⚠️「关联」只采信链上事实：出钱发币的付款方、给 creator 首笔交易出资的钱包。
@@ -166,8 +192,11 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     add(
       'good',
       '已剔除池与销毁地址',
-      `剔除 ${excludedPct.toFixed(1)}% 的池 / burn / 锁仓持仓后再计算集中度，避免把正常流动性误判为庄家控盘。` +
-        `真实流通盘 ${(100 - excludedPct).toFixed(1)}%。`,
+      `剔除 ${excludedForReport.toFixed(1)}% 的池 / burn / 锁仓持仓后再计算集中度，避免把正常流动性误判为庄家控盘。` +
+        `真实流通盘 ${(100 - excludedForReport).toFixed(1)}%。` +
+        (top10Source === 'sample'
+          ? '（本次用的是前 20 名持仓样本；加载全量持有人分布后这个比例会更准。）'
+          : ''),
     );
   }
 
@@ -184,12 +213,17 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
 
   // 巨鲸判断针对「能随时卖出」的持仓。多签/托管能随时转出，所以算；
   // 时间锁仓不能卖，已在 circulating 里被剔除，不会走到这里。
-  if (largest && largest.kind !== 'dev' && largest.pct > t.singleWalletWarn) {
+  // ⚠️ 同样要换算成「占流通盘」：72% 被锁仓时，占总供应 5% 的巨鲸其实握着
+  // 23% 的流通盘。用总量口径会和 top10Pct 自相矛盾（一个换了分母一个没换）。
+  const largestPctOfCirculating = largest ? ofCirculating(largest.pct) : 0;
+  if (largest && largest.kind !== 'dev' && largestPctOfCirculating > t.singleWalletWarn) {
     const who = largest.custody ? `程序托管仓位（${largest.custody.label}）` : '非 dev 钱包';
     add(
-      largest.pct > 20 ? 'high' : 'medium',
+      largestPctOfCirculating > 20 ? 'high' : 'medium',
       '存在单一巨鲸',
-      `${who} ${largest.address} 持有 ${largest.pct.toFixed(1)}%，其抛售会造成显著滑点。` +
+      `${who} ${largest.address} 持有流通盘的 ${largestPctOfCirculating.toFixed(1)}%` +
+        `（${largest.pct.toFixed(1)}% 的总供应量，流通盘 ${top10DenominatorPct.toFixed(1)}%），` +
+        '其抛售会造成显著滑点。' +
         (largest.custody ? '（托管不等于锁定：多签可随时签名转出，故仍计入巨鲸判定。）' : ''),
     );
   }
@@ -257,41 +291,53 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     );
   }
 
-  // 尘埃级托管（< custodyWarnPct）不出 finding：0.0% 的持仓提示只会淹没真正重要的信号
-  if (otherCustodyPct >= t.custodyWarnPct) {
+  // 尘埃级托管（< custodyWarnPct）不出 finding：0.0% 的持仓提示只会淹没真正重要的信号。
+  // 门槛同样按流通盘算：薄浮筹的币上，占总供应 0.5% 的多签可能是流通盘的 2.3%。
+  const otherCustodyOfCirculating = ofCirculating(otherCustodyPct);
+  if (otherCustodyOfCirculating >= t.custodyWarnPct) {
     const others = custodyList.filter((c) => c.kind !== 'timelock');
     add(
       'medium',
-      `程序托管持仓 ${otherCustodyPct.toFixed(1)}%（未剔除）`,
-      `${others.length} 个仓位由程序控制（${[...new Set(others.map((o) => o.label))].join('、')}），合计 ${otherCustodyPct.toFixed(1)}%。` +
+      `程序托管持仓占流通盘 ${otherCustodyOfCirculating.toFixed(1)}%（未剔除）`,
+      `${others.length} 个仓位由程序控制（${[...new Set(others.map((o) => o.label))].join('、')}），` +
+        `合计 ${otherCustodyOfCirculating.toFixed(1)}% 流通盘（占总供应 ${otherCustodyPct.toFixed(1)}%）。` +
         '⚠️ 多签/托管**不是时间锁**，可随时签名转出，因此仍然计入集中度，只是单独列出让你看得见。',
     );
   }
 
   const devPct = circulating.filter((h) => h.kind === 'dev').reduce((s, h) => s + h.pct, 0);
   const relatedPct = circulating.filter((h) => h.kind === 'related').reduce((s, h) => s + h.pct, 0);
-  if (devClusterPct > t.devClusterDanger) {
+  // 这个分支的文案一直写着「持有流通盘」，但数字是「占总供应量」——同一个口径 bug。
+  const devPctOfCirculating = ofCirculating(devPct);
+  const relatedPctOfCirculating = ofCirculating(relatedPct);
+  const devClusterOfCirculating = ofCirculating(devClusterPct);
+  if (devClusterOfCirculating > t.devClusterDanger) {
     add(
       'high',
       'dev 持仓偏高',
-      `creator 地址持有流通盘 ${devPct.toFixed(1)}%、与部署者关联的钱包持有 ${relatedPct.toFixed(1)}%，` +
-        `合计 ${devClusterPct.toFixed(1)}%（阈值 ${t.devClusterDanger}%）。`,
+      `creator 地址持有流通盘的 ${devPctOfCirculating.toFixed(1)}%（占总供应 ${devPct.toFixed(1)}%）、` +
+        `与部署者关联的钱包持有流通盘的 ${relatedPctOfCirculating.toFixed(1)}%（占总供应 ${relatedPct.toFixed(1)}%），` +
+        `合计 ${devClusterOfCirculating.toFixed(1)}% 流通盘（阈值 ${t.devClusterDanger}%）。`,
     );
   } else if (devClusterPct > 0) {
     add(
       'good',
       'dev 持仓在合理范围',
-      `creator 地址持有 ${devPct.toFixed(1)}%` +
-        (relatedPct > 0 ? `，关联钱包持有 ${relatedPct.toFixed(1)}%` : '') +
-        `，合计 ${devClusterPct.toFixed(1)}%。`,
+      `creator 地址持有流通盘的 ${devPctOfCirculating.toFixed(1)}%（占总供应 ${devPct.toFixed(1)}%）` +
+        (relatedPct > 0
+          ? `，关联钱包持有流通盘的 ${relatedPctOfCirculating.toFixed(1)}%（占总供应 ${relatedPct.toFixed(1)}%）`
+          : '') +
+        `，合计 ${devClusterOfCirculating.toFixed(1)}% 流通盘（占总供应 ${devClusterPct.toFixed(1)}%）。`,
     );
   }
 
-  if (sniperPct > t.sniperWalletDanger) {
+  const sniperOfCirculating = ofCirculating(sniperPct);
+  if (sniperOfCirculating > t.sniperWalletDanger) {
     add(
-      sniperPct > 45 ? 'high' : 'medium',
+      sniperOfCirculating > 45 ? 'high' : 'medium',
       '狙击钱包筹码偏多',
-      `最早成交的钱包目前合计持有 ${sniperPct.toFixed(1)}%，随时可能砸盘。` +
+      `最早成交的钱包目前合计持有流通盘的 ${sniperOfCirculating.toFixed(1)}%` +
+        `（占总供应 ${sniperPct.toFixed(1)}%），随时可能砸盘。` +
         '（已排除 creator 自买；只统计仍留在前 20 大持仓里的部分，因此是下限。未知时不会出现在这里。）',
     );
   }
@@ -310,9 +356,17 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     findings,
     metrics: {
       top10Pct,
-      excludedPct,
+      /** 分子：剔除后前 10 名占总供应量的比例（读者可以拿它与下面表格逐行相加核对） */
+      top10PctOfSupply,
+      /** 分母：流通盘占总供应量的比例（＝总量 − 池/销毁/锁仓） */
+      circulatingPct: top10DenominatorPct,
+      /** full = 全量枚举；sample = 只有前 20 名，是估算 */
+      top10Source,
+      excludedPct: excludedForReport,
       devClusterPct,
+      devClusterPctOfCirculating: devClusterOfCirculating,
       sniperPct,
+      sniperPctOfCirculating: sniperOfCirculating,
       ...(holderCount !== undefined ? { holderCount } : {}),
       circulatingCount: circulating.length,
       byKind,

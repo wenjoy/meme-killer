@@ -40,24 +40,51 @@ function input(partial: Partial<ScanInput>): ScanInput {
 }
 
 // ── 1. 最大误报源：池持仓必须剔除 ─────────────────────────────────
-test('池与 burn 持仓被剔除后，正常项目不会被误判为庄家控盘', () => {
+test('池与 burn 持仓被剔除后，流通盘分散的项目不会被误判为庄家控盘', () => {
   const data = input({
-    // 池持有 60%，剩下 40% 里散户分布很散
+    // 池 60% + burn 10%，流通盘只剩 30%，而且这 30% 分散在 60 个钱包里
     holders: [
       { address: 'pool', amount: 0, pct: 60, isPool: true },
       { address: 'burn', amount: 0, pct: 10, isBurn: true },
-      ...Array.from({ length: 12 }, (_, i) => ({
+      ...Array.from({ length: 60 }, (_, i) => ({
         address: `retail${i}`,
         amount: 0,
-        pct: 2,
+        pct: 0.5,
       })),
     ],
   });
   const r = analyzeHolders(data);
   assert.equal(r.vetoed, false, '剔除池后不应触发集中度否决');
   assert.ok((r.metrics!.excludedPct as number) === 70, '剔除比例应为 70%');
-  // 前 10 大散户 2% × 10 = 20%，低于 25% 警戒线
-  assert.equal(r.metrics!.top10Pct, 20);
+  assert.equal(r.metrics!.circulatingPct, 30, '流通盘 = 100 − 70');
+  // 前 10 大散户 0.5% × 10 = 5%（占总供应），占流通盘 5/30 ≈ 16.7%
+  assert.equal(r.metrics!.top10PctOfSupply, 5);
+  assert.ok(Math.abs(Number(r.metrics!.top10Pct) - 16.667) < 0.01, '占流通盘 ≈ 16.7%');
+});
+
+// ── 1b. 口径回归：薄浮筹必须被报出来（这里曾经漏报）────────────────
+test('锁仓/大池把流通盘压薄时，前十握着的其实就是浮筹的大头 —— 不能报成「健康」', () => {
+  // 同一份「池 60% + burn 10%」的数据，但流通盘 30% 只落在 12 个钱包手里：
+  // 每个 2% 总供应 → 前 10 名合计 20% 总供应，却是 20/30 ≈ 66.7% 的流通盘。
+  // 旧实现拿 20% 去比 25% 警戒线，直接放过去（然后写下「占流通盘 20%」）。
+  const r = analyzeHolders(
+    input({
+      holders: [
+        { address: 'pool', amount: 0, pct: 60, isPool: true },
+        { address: 'burn', amount: 0, pct: 10, isBurn: true },
+        ...Array.from({ length: 12 }, (_, i) => ({ address: `retail${i}`, amount: 0, pct: 2 })),
+      ],
+    }),
+  );
+  assert.equal(r.metrics!.top10PctOfSupply, 20, '分子仍是占总供应量的 20%');
+  assert.ok(
+    Math.abs(Number(r.metrics!.top10Pct) - 66.667) < 0.01,
+    `占流通盘应该是 20/30 ≈ 66.7%，实际 ${r.metrics!.top10Pct}`,
+  );
+  assert.equal(r.vetoed, true, '握着流通盘 2/3 的前十名必须触发否决');
+  const f = r.findings.find((x) => x.title.includes('过度集中'));
+  assert.ok(f, '必须给出集中度 finding');
+  assert.ok(f.detail.includes('占流通盘'), '措辞要写清是「占流通盘」，因为数字确实换过分母了');
 });
 
 test('池持仓不剔除时本会误报 —— 证明剔除逻辑确实在起作用', () => {
@@ -65,13 +92,16 @@ test('池持仓不剔除时本会误报 —— 证明剔除逻辑确实在起作
   const poolAddr = 'RaydiumPoolV4xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
   const holders: RawHolder[] = [
     { address: poolAddr, amount: 0, pct: 60, isPool: true },
-    ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 2 })),
+    ...Array.from({ length: 60 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 0.5 })),
   ];
   const withPool = analyzeHolders(input({ holders }));
-  assert.equal(withPool.metrics!.top10Pct, 20);
+  // 流通盘 40%，前十名 5%（占总供应）= 12.5% 流通盘
+  assert.equal(withPool.metrics!.circulatingPct, 40);
+  assert.ok(Math.abs(Number(withPool.metrics!.top10Pct) - 12.5) < 1e-9);
 
   // 同样的数据，但池地址既没有 isPool 标记、也不在 poolAddresses 里：
-  // Top10 会立刻飙到 62% 并触发否决 —— 说明「识别并剔除池」这一步不可省。
+  // 池那 60% 会被当成普通持有人，分子飙到 64.5%、分母退回 100% → 触发否决。
+  // 这说明「识别并剔除池」这一步不可省。
   const noPoolFlag = analyzeHolders(
     input({
       holders: holders.map((h, i) => ({
@@ -505,13 +535,18 @@ test('时间锁仓从集中度中剔除，但仍被单独列出（不能剔除�
           unlockAtUnknown: true,
         },
       },
-      ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 2 })),
+      ...Array.from({ length: 60 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 0.4 })),
     ],
   });
   const r = analyzeHolders(data);
 
   assert.equal(r.metrics!.timelockPct, 50, '锁仓占比应被统计');
-  assert.equal(r.metrics!.top10Pct, 20, 'Top10 只应算 10 个散户 = 20%，不含锁仓');
+  assert.equal(r.metrics!.circulatingPct, 50, '锁仓 50% 之后流通盘就是 50%');
+  assert.ok(
+    Math.abs(Number(r.metrics!.top10PctOfSupply) - 4) < 1e-9,
+    'Top10 只算 10 个散户 = 4%（占总供应），不含锁仓',
+  );
+  assert.ok(Math.abs(Number(r.metrics!.top10Pct) - 8) < 1e-9, '占流通盘 = 4/50 = 8%');
   assert.equal(r.vetoed, false, '锁仓不该触发集中度否决');
 
   // 必须列出来，而不是悄悄剔除
@@ -524,6 +559,41 @@ test('时间锁仓从集中度中剔除，但仍被单独列出（不能剔除�
   const f = r.findings.find((x) => x.title.includes('锁仓持仓'));
   assert.ok(f, '应有专门的锁仓 finding');
   assert.ok(f.detail.includes('待接入'), '解锁时间未知必须如实说明');
+});
+
+test('【回归】所有占比类阈值必须用同一个分母（流通盘），不能有的用总量有的用流通盘', () => {
+  // 50% 被锁仓 → 流通盘只有 50%。dev 持 8% 总供应 = 16% 流通盘，已过 15% 阈值。
+  // 旧实现拿 8% 去比 15%，报「dev 持仓在合理范围」—— 同一份报告里
+  // Top10 用流通盘、dev 用总量，读者看到两个数会以为能相加。
+  const r = analyzeHolders(
+    input({
+      developer: { creator: 'devaddr', launchWallet: 'devaddr' },
+      holders: [
+        {
+          address: 'LockedVault111111111111111111111111111111',
+          amount: 0,
+          pct: 50,
+          custody: {
+            programId: 'LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn',
+            kind: 'timelock',
+            label: 'Jupiter Lock（锁仓）',
+          },
+        },
+        { address: 'devaddr', amount: 0, pct: 8 },
+        ...Array.from({ length: 40 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 0.75 })),
+      ],
+    }),
+  );
+  const m = r.metrics!;
+  assert.equal(m.circulatingPct, 50, '流通盘 = 100 − 50');
+  assert.ok(Math.abs(Number(m.devClusterPct) - 8) < 1e-9, '总量口径下 dev 是 8%');
+  assert.ok(
+    Math.abs(Number(m.devClusterPctOfCirculating) - 16) < 1e-9,
+    `流通盘口径应该是 16%，实际 ${m.devClusterPctOfCirculating}`,
+  );
+  const f = r.findings.find((x) => x.title.includes('dev 持仓偏高'));
+  assert.ok(f, '16% 流通盘必须报出来，不能因为「8% 小于 15%」而放过');
+  assert.ok(f.detail.includes('流通盘') && f.detail.includes('占总供应'), '两个口径都要写出来，读者才能和上面的表格对账');
 });
 
 test('多签/程序托管**不**剔除，仍计入集中度（防止把能砸盘的巨鲸放过去）', () => {
@@ -1303,13 +1373,15 @@ test('Top20 明细：分类、是否计入、以及 Top10 能不能被加出来'
     '明细必须按持仓从大到小，否则「前 10 行」没有意义',
   );
 
-  // 关键：读者把「计入」的前 10 行加起来，必须正好等于 Top10 集中度
+  // 关键：读者把「计入」的前 10 行加起来（占总供应量），再除以流通盘，
+  // 必须正好等于界面上的 Top10 集中度 —— 这个除法读者可以自己按计算器核对
   const counted10 = rows.filter((x) => x.counted).slice(0, 10);
   const sum = counted10.reduce((s, x) => s + x.pct, 0);
   assert.equal(counted10.length, 10);
+  const derived = (sum / Number(r.metrics!.circulatingPct)) * 100;
   assert.ok(
-    Math.abs(sum - Number(r.metrics!.top10Pct)) < 1e-9,
-    `计入的前 10 行合计 ${sum} 应等于 top10Pct ${r.metrics!.top10Pct}`,
+    Math.abs(derived - Number(r.metrics!.top10Pct)) < 1e-9,
+    `计入前 10 行合计 ${sum} ÷ 流通盘 ${r.metrics!.circulatingPct}% = ${derived} 应等于 top10Pct ${r.metrics!.top10Pct}`,
   );
 });
 
@@ -1328,7 +1400,11 @@ test('前 20 行里被剔除的太多时，要往后补行，保证「计入」�
   assert.equal(counted10.length, 10, '补行之后必须够 10 行，否则界面上那个等式不成立');
   assert.ok(rows.length > 20, '补出来的行数可以超过 20');
   const sum = counted10.reduce((s, x) => s + x.pct, 0);
-  assert.ok(Math.abs(sum - Number(r.metrics!.top10Pct)) < 1e-9);
+  const derived = (sum / Number(r.metrics!.circulatingPct)) * 100;
+  assert.ok(
+    Math.abs(derived - Number(r.metrics!.top10Pct)) < 1e-9,
+    '补行之后这个除法依然要成立',
+  );
 });
 
 test('创建交易的付款方要标成「与部署者关联」，不能显示成散户', () => {

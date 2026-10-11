@@ -674,7 +674,11 @@ function CustodySection({ report }: { report: ScanReport }) {
  * 用户要求：集中度那里要把 Top20 列出来。
  * 为什么必须逐行列出：`Top10 = 62.9%` 独自出现时读者无法核对 ——
  * 这个表把每个地址的分类（池/销毁/锁仓/托管/dev/狙击/散户）与**是否计入集中度**
- * 都写清楚，读者可以自己把「计入集中度」的前 10 行加一遍，看是不是那个数。
+ * 都写清楚。
+ *
+ * ⚠️ 等式必须写成两步，因为 Top10 集中度是「占流通盘」：
+ *   下表「计入」前 10 行合计（占总供应）÷ 流通盘（占总供应）= Top10 集中度
+ * 只写「合计 = Top10」是错的（那正是修掉的口径 bug），读者按计算器一除就能核对。
  */
 function TopHoldersSection({ report }: { report: ScanReport }) {
   const m = report.dimensions.holders?.metrics;
@@ -693,15 +697,30 @@ function TopHoldersSection({ report }: { report: ScanReport }) {
   };
   const countedTop10 = rows.filter((r) => r.counted).slice(0, 10);
   const countedSum = countedTop10.reduce((s, r) => s + r.pct, 0);
+  const circulatingPct = Number(m?.circulatingPct ?? 0);
+  const top10Source = m?.top10Source === 'full' ? '全量枚举' : '前 20 名样本估算';
 
   return (
     <section className="space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold text-ink-300">前 20 大持仓（链上能拿到的全部）</h2>
         <span className="font-mono text-[10px] text-ink-500">
-          Top10 集中度 {num(m?.top10Pct)}% = 下表「计入」的前 {countedTop10.length} 行合计 {num(countedSum)}%
+          Top10 集中度 <span className="text-warn">{num(m?.top10Pct)}%</span>
+          （占流通盘 {num(circulatingPct)}%）= 下表「计入」前 {countedTop10.length} 行合计{' '}
+          {num(countedSum)}%（占总供应）÷ 流通盘 {num(circulatingPct)}%
+          <span className="ml-1 text-ink-600">· {top10Source}</span>
         </span>
       </div>
+      <p className="text-[11px] leading-relaxed text-ink-400">
+        「占总供应」这一列可以直接相加核对（锁仓那 72% 也算在里面，所以第一行就占掉半张表）；
+        Top10 集中度则是把这些「计入」的行加起来再除以流通盘 {num(circulatingPct)}%
+        {top10Source === '前 20 名样本估算' && (
+          <span className="text-warn">
+            {' '}—— 本次分子分母都只用前 20 名样本估的，加载全量持有人分布后会更准
+          </span>
+        )}
+        。
+      </p>
       <div className="overflow-hidden rounded-xl border border-ink-700">
         <table className="w-full text-left text-xs">
           <thead className="bg-ink-900/60 text-ink-400">
@@ -969,9 +988,11 @@ function ConcentrationCurve({ points }: { points: HolderCurvePoint[] }) {
         </table>
       </div>
       <p className="mt-1 text-[10px] leading-relaxed text-ink-500">
-        同一个 Top10 出现三个数只是因为**分母不同**：「剔除后占总供应」这一列与上面「持币集中度」里的
-        Top10 集中度是同一个数；「占流通盘」是把分母换成（总量 − 池/销毁/锁仓）后的说法。
-        额外面孔：最外层那条线含锁仓，所以看着很吓人 —— 那部分卖不掉。
+        同一个 Top10 出现三个数只是因为<span className="text-ink-300">分母不同</span>：中间那列
+        「剔除后占总供应」是上面「持币集中度」里 Top10 集中度的<span className="text-ink-300">分子</span>，
+        最右列「占流通盘」＝ 中间那列 ÷（总量 − 池/销毁/锁仓），
+        才是<span className="text-ink-300">最终显示的那个 Top10 集中度</span>。
+        最外层那条线含锁仓所以看着很吓人 —— 那部分卖不掉。
       </p>
     </div>
   );

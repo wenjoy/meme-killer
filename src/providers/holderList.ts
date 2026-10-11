@@ -303,9 +303,8 @@ export function buildBuckets(owners: OwnerAggregate[]): HolderBucket[] {
  * 「占流通盘」不是另一个数据，而是把「剔除后占总供应量」换了个分母 ——
  * 换分母这件事必须在界面上写明，否则同一个 Top10 会出现三个数字。
  */
-export function buildCurve(owners: OwnerAggregate[]): HolderCurvePoint[] {
+export function buildCurve(owners: OwnerAggregate[], circulatingPct: number): HolderCurvePoint[] {
   const counted = owners.filter((o) => o.counted);
-  const totalCounted = counted.reduce((s, o) => s + o.pct, 0);
   return THRESHOLDS.holders.overviewCurvePoints.filter((n) => n <= owners.length).map((n) => {
     const topAll = owners.slice(0, n).reduce((s, o) => s + o.pct, 0);
     const topCounted = counted.slice(0, n).reduce((s, o) => s + o.pct, 0);
@@ -313,7 +312,9 @@ export function buildCurve(owners: OwnerAggregate[]): HolderCurvePoint[] {
       top: n,
       cumPctAll: topAll,
       cumPctCounted: topCounted,
-      cumPctCirculating: totalCounted > 0 ? (topCounted / totalCounted) * 100 : 0,
+      // 分母 = 总量 − 池/销毁/锁仓（与报告里的 Top10 集中度用**同一个**分母，
+      // 这样界面上那个 38.22% 和 finding 里的 38.22% 一定是同一个数）
+      cumPctCirculating: circulatingPct > 0 ? (topCounted / circulatingPct) * 100 : 0,
     };
   });
 }
@@ -350,6 +351,10 @@ export function buildHolderOverview(
   const dustThreshold = THRESHOLDS.holders.overviewDustPct;
   const dust = counted.filter((o) => o.pct < dustThreshold);
   const coveredPct = owners.reduce((s, o) => s + o.pct, 0);
+  const excludedPct = Math.max(0, coveredPct - counted.reduce((s, o) => s + o.pct, 0));
+  // 流通盘分母 = 总量 − 剔除项。用 100 减而不是「枚举到的计入项之和」：
+  // 后者在枚举不完整时会把分母算小、把集中度算得虚高。
+  const circulatingPct = Math.max(0, 100 - excludedPct);
 
   const overview: HolderOverview = {
     source: enumeration.source,
@@ -359,10 +364,11 @@ export function buildHolderOverview(
     ownersTotal: owners.length,
     ownersWithBalance: ownersWithBalance.length,
     coveredPct,
-    excludedPct: Math.max(0, coveredPct - counted.reduce((s, o) => s + o.pct, 0)),
+    excludedPct,
+    circulatingPct,
     circulatingOwners: counted.length,
     buckets: buildBuckets(ownersWithBalance),
-    curve: buildCurve(ownersWithBalance),
+    curve: buildCurve(ownersWithBalance, circulatingPct),
     ownersFor50: ownersFor(ownersWithBalance, 50),
     ownersFor80: ownersFor(ownersWithBalance, 80),
     dustOwners: dust.length,

@@ -85,19 +85,21 @@ test('池与锁仓要从流通盘里剔除，两条曲线的分母不同', () =>
   const top10 = overview.curve.find((c) => c.top === 10)!;
   // 含池锁仓的 Top10 = 池 50% + 9 个散户 × 4% = 86%
   assert.ok(Math.abs(top10.cumPctAll - 86) < 1e-9, `含池锁仓 Top10 是 86%，实际 ${top10.cumPctAll}`);
-  // 剔除后只剩 10 个散户，Top10 就是全部流通盘 = 100%
+  // 剔除后 10 个散户握 40% 的总供应；流通盘 = 100 − 50 = 50% → 占流通盘 80%
+  // （剩下 10% 总供应没被枚举到，但它仍然是流通盘的一部分，所以分母是 50 不是 40）
   assert.ok(
-    Math.abs(top10.cumPctCirculating - 100) < 1e-9,
-    `剔除后 10 个持有人分掉全部流通盘 = 100%，实际 ${top10.cumPctCirculating}`,
+    Math.abs(top10.cumPctCirculating - 80) < 1e-9,
+    `占流通盘 = 40/50 = 80%，实际 ${top10.cumPctCirculating}`,
   );
   // 剔除后只剩散户：Top10 就是 10 个散户 × 4% = 40%（占总供应）
   assert.ok(
     Math.abs(top10.cumPctCounted - 40) < 1e-9,
     `剔除后占总供应是 40%，实际 ${top10.cumPctCounted}`,
   );
+  // 这个 fixture 的流通盘是 50%（余下 50% 没枚举到），40/50 = 80%
   assert.ok(
-    top10.cumPctCirculating > top10.cumPctCounted,
-    '换成分母=流通盘后，同一个 Top10 的占比必须更大',
+    Math.abs(top10.cumPctCirculating - 80) < 1e-9,
+    `占流通盘 = 40/50 = 80%，实际 ${top10.cumPctCirculating}`,
   );
 });
 
@@ -135,7 +137,8 @@ test('曲线必须同时给两条口径，且累计单调不减', () => {
     ],
     ctx({ poolAddresses: ['pool'] }),
   );
-  const curve = buildCurve(owners);
+  // 分母传「流通盘」＝总量 − 剔除项（该 fixture 只剔除了池的 50%）
+  const curve = buildCurve(owners, 50);
   assert.ok(curve.length >= 2, '至少要能给出两个点（Top10、Top50…）');
   for (let i = 1; i < curve.length; i++) {
     assert.ok(curve[i].cumPctAll >= curve[i - 1].cumPctAll, '累计不能回落');
@@ -144,6 +147,11 @@ test('曲线必须同时给两条口径，且累计单调不减', () => {
   }
   const top10 = curve.find((c) => c.top === 10)!;
   assert.ok(top10.cumPctAll > top10.cumPctCounted, '含池锁仓的口径必须更大 —— 这正是那个 84% vs 8% 的差别');
+  // 曲线「占流通盘」与报告里的 Top10 集中度必须用同一个分母（这里都是 50%）
+  assert.ok(
+    Math.abs(top10.cumPctCounted / 50 * 100 - top10.cumPctCirculating) < 1e-9,
+    '曲线第三列必须等于「剔除后占总供应 ÷ 流通盘」，否则界面和 finding 会对不上',
+  );
 });
 
 test('burn 地址被识别为销毁，不算流通持有人', () => {
