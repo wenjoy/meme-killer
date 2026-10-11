@@ -23,6 +23,7 @@ import type {
   ScanInput,
   SellPressureBucket,
   SellPressureInfo,
+  SellPressureInput,
   SellPressureWallet,
   Severity,
 } from '../types';
@@ -132,6 +133,26 @@ function buildCostBuckets(rows: SellPressureWallet[]): SellPressureBucket[] {
   return out.filter((b) => b.wallets > 0);
 }
 
+/**
+ * 合并窗口成交与深度成交。
+ *
+ * ⚠️ 同一个地址**优先用深度数据**（完整历史），并且把该地址的窗口成交剔除 ——
+ * 混在一起会把「同一时期的买入」重复计入，加权后的成本没有意义。
+ */
+export function mergeTradeSources(
+  windowTrades: SellPressureInput['trades'],
+  deepTrades: SellPressureInput['deepTrades'],
+): { trades: SellPressureInput['trades']; deepAddresses: Set<string> } {
+  const deepAddresses = new Set<string>();
+  const deep: SellPressureInput['trades'] = [];
+  for (const t of deepTrades ?? []) {
+    deepAddresses.add(t.trader);
+    deep.push(t);
+  }
+  const fromWindow = windowTrades.filter((t) => !deepAddresses.has(t.trader));
+  return { trades: [...deep, ...fromWindow], deepAddresses };
+}
+
 export function analyzeSellPressure(data: ScanInput): DimensionResult {
   const t = THRESHOLDS.sellPressure;
   const findings: Finding[] = [];
@@ -156,12 +177,31 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
     };
   }
 
-  const { wallets, paired, minted } = aggregateCostBasis(sp.trades);
+  // 深度数据（完整历史）优先；被它覆盖的地址不再用窗口估算，避免重复计数
+  const merged = mergeTradeSources(sp.trades, sp.deepTrades);
+  const { wallets, paired, minted } = aggregateCostBasis(merged.trades);
+  const deepAddresses = merged.deepAddresses;
   // ⚠️ 分母必须是**窗口内全部成交**（含配对失败的）。曾经用 sp.trades.length
   // 当分母 —— 但那个数组本身已经过滤过，算出来永远是 100%，
   // 于是「只有一小部分筹码能分析」这个最关键的警告永远不会出现。
-  const attributionPct = sp.windowTrades > 0 ? (paired / sp.windowTrades) * 100 : 0;
-  const { price, priceTs } = impliedPrice(sp.trades);
+  // ⚠️ 「成交配对率」只在**纯窗口口径**下有意义：它的分子分母都是窗口成交。
+  // 深度模式下多数地址用的是完整历史（根本不经窗口配对），这个比例会失去意义 ——
+  // 曾经因为分子含深度成交、分母仍是窗口笔数，报出过 3344%。
+  // 所以深度模式下不再给这个数字（返回 undefined），改用「深度覆盖地址数」表达数据完整度。
+  const deepCoverage = deepAddresses.size > 0;
+  const windowOnlyTrades = merged.trades.filter((t) => !deepAddresses.has(t.trader)).length;
+  // 分母 = 窗口内**全部**成交（含配对失败的，见 windowTrades 的定义）；
+  // 分子 = 真正能配出成本的笔数。深度模式下不给这个数（分母不再是同一批数据）。
+  const attributionPct: number | undefined = deepCoverage
+    ? undefined
+    : sp.windowTrades > 0
+      ? Math.min(100, (windowOnlyTrades / sp.windowTrades) * 100)
+      : 0;
+  const deepWallets = [...deepAddresses].length;
+  // ⚠️ 必须用**合并后**的成交反推现价：深度数据里往往有更新的成交，
+  // 只用窗口成交会拿到一个陈旧的价格（实测因此把现价算错 10 倍，
+  // 进而把浮亏的钱包报成浮盈）。
+  const { price, priceTs } = impliedPrice(merged.trades);
   const priceAgeSec = priceTs !== undefined ? sp.nowSec - priceTs : undefined;
 
   // 现价太旧或算不出来：不给盈亏结论，只给成本分布
@@ -205,6 +245,7 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
       costSol: w.boughtSol,
       ...(w.lastTs !== undefined ? { lastTs: w.lastTs } : {}),
       ...(sp.kinds?.get(w.address) ? { kind: sp.kinds.get(w.address) } : {}),
+      ...(deepAddresses.has(w.address) ? { source: 'deep' as const } : { source: 'window' as const }),
     });
   }
 
@@ -237,7 +278,7 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
   const inProfit = rows.filter((r) => r.pnlPct > 0);
 
   // ── 结论 ────────────────────────────────────────────────────────
-  if (attributionPct < t.minAttributionPct) {
+  if (attributionPct !== undefined && attributionPct < t.minAttributionPct) {
     add(
       'medium',
       `只有 ${attributionPct.toFixed(0)}% 的成交能配对出成本`,
@@ -289,6 +330,17 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
     );
   }
 
+  if (deepWallets > 0) {
+    add(
+      'good',
+      `${deepWallets} 个钱包的成本来自完整历史（不是窗口估算）`,
+      `深度模式逐地址拉取了前 ${sp.deepAddresses ?? deepWallets} 名持有人的全部历史成交，` +
+        `其中 ${deepWallets} 个能算出**真实成本**与**真实已卖比例**。` +
+        '这些地址不受「成交窗口中段有缺口」影响 —— 它们的卖出记录是完整的，' +
+        '因此表里标「完整历史」的行可信度明显高于「窗口估算」的行。',
+    );
+  }
+
   if (exited > 0) {
     add(
       'good',
@@ -309,10 +361,14 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
       : [];
 
   const info: SellPressureInfo = {
+    deepWallets,
+    deepAddresses: sp.deepAddresses ?? 0,
     ...(priceForPnl !== undefined ? { priceSol: priceForPnl } : {}),
     ...(costBuckets.length > 0 ? { costBuckets, priceNote: '现价不可靠，改按成本价区间分布' } : {}),
     walletsAnalyzed: rows.length,
-    attributionPct: Math.round(attributionPct * 10) / 10,
+    ...(attributionPct !== undefined
+      ? { attributionPct: Math.round(attributionPct * 10) / 10 }
+      : {}),
     totalUnsoldTokens: totalUnsold,
     totalCostSol,
     unsoldPctOfCirculating,
@@ -326,8 +382,9 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
     mintedWallets: mintedWallets.length,
     mintedUnsoldTokens,
     windowNote:
-      `只统计成交窗口内能配对的 ${paired} 笔成交（窗口共 ${sp.trades.length} 笔）；` +
-      '已卖光的钱包不计入抛压；未卖量按窗口估算，与全量余额不一致时取较小值。',
+      `${deepWallets > 0 ? `${deepWallets} 个地址用逐地址**完整历史**算成本（真实值），其余` : ''}` +
+      `用成交窗口内能配对的 ${paired} 笔成交估算（窗口共 ${sp.trades.length} 笔）；` +
+      '已卖光的钱包不计入抛压；窗口估算的未卖量与实际余额不一致时取较小值。',
   };
 
   return {

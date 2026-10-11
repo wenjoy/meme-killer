@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { aggregateCostBasis, analyzeSellPressure } from './sellPressure.ts';
+import { aggregateCostBasis, analyzeSellPressure, mergeTradeSources } from './sellPressure.ts';
 import type { ScanInput, SellPressureInfo, SellPressureWallet } from '../types.ts';
 
 const DAY = 86_400;
@@ -30,6 +30,8 @@ function input(over: {
   windowTrades?: number;
   circulatingTokens?: number;
   holderBalances?: Map<string, number>;
+  deepTrades?: T[];
+  deepAddresses?: number;
 }): ScanInput {
   return {
     token: { mint: 'M', symbol: 'T', supply: 1_000_000 },
@@ -39,6 +41,8 @@ function input(over: {
       nowSec: NOW,
       circulatingTokens: over.circulatingTokens ?? 1_000_000,
       ...(over.holderBalances ? { holderBalances: over.holderBalances } : {}),
+      ...(over.deepTrades ? { deepTrades: over.deepTrades } : {}),
+      ...(over.deepAddresses !== undefined ? { deepAddresses: over.deepAddresses } : {}),
     },
   };
 }
@@ -215,4 +219,93 @@ test('逐行证据里带着可以核对的字段', () => {
   assert.equal(row.costSol, 1);
   assert.ok(Math.abs(row.pnlPct - 100) < 1e-6, `w 应是 +100% 浮盈，实际 ${row.pnlPct}`);
   assert.ok(row.lastTs !== undefined, '要能看出这是什么时候买的');
+});
+
+// ── 深度模式（逐地址完整历史）──────────────────────────────────────
+
+test('【回归】深度数据必须**替换**而不是叠加同一地址的窗口成交', () => {
+  // 同一个地址在两个数据源里都有：叠加会把同期买入算两遍，加权成本直接失真。
+  const { trades, deepAddresses } = mergeTradeSources(
+    [
+      { trader: 'a', side: 'buy', sol: 1, tokenAmount: 100 },
+      { trader: 'b', side: 'buy', sol: 1, tokenAmount: 100 },
+    ],
+    [{ trader: 'a', side: 'buy', sol: 5, tokenAmount: 100 }],
+  );
+  assert.ok(deepAddresses.has('a'));
+  assert.equal(trades.filter((t) => t.trader === 'a').length, 1, 'a 只能有一条（深度那条）');
+  assert.equal(trades.find((t) => t.trader === 'a')!.sol, 5, '留下的应该是深度数据');
+  assert.equal(trades.filter((t) => t.trader === 'b').length, 1, '没被深度覆盖的地址仍用窗口数据');
+});
+
+test('深度模式覆盖的地址：成本来自完整历史，行上标 deep', () => {
+  const r = analyzeSellPressure(
+    input({
+      // 窗口里只看到它买了 100 枚（缺口期间的买入看不到）
+      trades: [{ trader: 'whale', side: 'buy', sol: 1, tokenAmount: 100, ts: NOW - 300 }],
+      // 深度历史告诉我们在缺口里它还买了 900 枚
+      deepTrades: [
+        { trader: 'whale', side: 'buy', sol: 1, tokenAmount: 100, ts: NOW - 300 },
+        { trader: 'whale', side: 'buy', sol: 18, tokenAmount: 900, ts: NOW - 200 },
+        // 现价锚（0.001）：whale 的真实成本 0.019 远高于它 → 浮亏
+        { trader: 'pricer', side: 'buy', sol: 0.1, tokenAmount: 100, ts: NOW - 60 },
+      ],
+      deepAddresses: 2,
+      circulatingTokens: 100_000,
+    }),
+  );
+  const m = info(r);
+  assert.equal(m.deepWallets, 2);
+  assert.equal(m.deepAddresses, 2);
+  assert.ok(
+    m.buckets.some((b) => b.wallets > 0),
+    'whale 必须被计入某个盈亏分桶（它是浮亏，不在「浮盈持仓」名单里）',
+  );
+  assert.ok(
+    r.findings.some((f) => f.title.includes('完整历史')),
+    '必须有一条 finding 说明有多少钱包用上了真实成本',
+  );
+  // 关键：真实成本用的是完整 1000 枚，不是窗口里的 100 枚。
+  // 合计 = whale 1000 枚 + 定价锚 pricer 100 枚 = 1100。
+  assert.equal(m.totalUnsoldTokens, 1100, 'whale 必须按完整历史的 1000 枚计入，不是窗口的 100 枚');
+  assert.ok(
+    Math.abs(m.totalCostSol - 19.1) < 1e-9,
+    `成本合计应为 19.1 SOL（whale 1+18，pricer 0.1），实际 ${m.totalCostSol}`,
+  );
+});
+
+test('【回归】现价必须从**合并后**的成交反推（深度数据里有更新的成交）', () => {
+  // 只用窗口成交会拿到一个陈旧价格：这里窗口最新成交是 300 天前（0.01），
+  // 而深度数据里 1 分钟前有一笔 0.001 —— 现价必须取后者。
+  const r = analyzeSellPressure(
+    input({
+      trades: [{ trader: 'a', side: 'buy', sol: 1, tokenAmount: 100, ts: NOW - 300 * DAY }],
+      deepTrades: [
+        { trader: 'a', side: 'buy', sol: 1, tokenAmount: 100, ts: NOW - 300 * DAY },
+        { trader: 'fresh', side: 'buy', sol: 0.1, tokenAmount: 100, ts: NOW - 60 },
+      ],
+      deepAddresses: 2,
+      circulatingTokens: 100_000,
+    }),
+  );
+  const m = info(r);
+  assert.ok(Math.abs((m.priceSol ?? 0) - 0.001) < 1e-9, `现价应为 0.001，实际 ${m.priceSol}`);
+});
+
+test('没有深度数据时行为不变（不能因为加了新路径就改变旧口径）', () => {
+  const r = analyzeSellPressure(
+    input({
+      trades: [
+        { trader: 'a', side: 'buy', sol: 1, tokenAmount: 1000, ts: NOW - 100 },
+        // 现价锚：a 的成本 0.001，现价 0.002 → 浮盈
+        { trader: 'pricer', side: 'buy', sol: 0.2, tokenAmount: 100, ts: NOW - 60 },
+      ],
+      circulatingTokens: 100_000,
+    }),
+  );
+  const m = info(r);
+  assert.equal(m.deepWallets, 0);
+  assert.equal(m.deepAddresses, 0);
+  assert.equal(m.topHoldersAtProfit.find((x) => x.address === 'a')!.source, 'window');
+  assert.ok(!r.findings.some((f) => f.title.includes('完整历史')));
 });

@@ -161,11 +161,16 @@ export function Report({
   report,
   onForceOverview,
   forcing,
+  onRunDeep,
+  deepPending,
 }: {
   report: ScanReport;
   /** 点「按需加载全量分布」时重新扫描（带 forceOverview） */
   onForceOverview?: () => void;
   forcing?: boolean;
+  /** 触发深度分析（逐地址拉完整历史，算出真实成本） */
+  onRunDeep?: () => void;
+  deepPending?: boolean;
 }) {
   const tone = TONE[report.band.tone];
   const scores: Record<string, number> = {};
@@ -446,7 +451,7 @@ export function Report({
 
       <DiamondSection report={report} />
 
-      <SellPressureSection report={report} />
+      <SellPressureSection report={report} onRunDeep={onRunDeep} deepPending={deepPending} />
 
       <Provenance report={report} />
 
@@ -1401,10 +1406,19 @@ function DiamondSection({ report }: { report: ScanReport }) {
  * - 已卖光（≥90%）的钱包不计入抛压 —— 已经跑掉的筹码不会再来砸盘；
  * - 卖了一半的按剩余部分折算，未卖量与实际余额不一致时取较小值（保守）。
  */
-function SellPressureSection({ report }: { report: ScanReport }) {
+function SellPressureSection({
+  report,
+  onRunDeep,
+  deepPending,
+}: {
+  report: ScanReport;
+  onRunDeep?: () => void;
+  deepPending?: boolean;
+}) {
   const m = report.dimensions.sellPressure?.metrics;
   const info = m as unknown as SellPressureInfo | undefined;
   if (!info || info.walletsAnalyzed === undefined) return null;
+  const hasDeep = (info.deepWallets ?? 0) > 0;
 
   const baseBuckets = info.priceSol !== undefined ? info.buckets : (info.costBuckets ?? []);
   const maxShare = Math.max(0.0001, ...baseBuckets.map((b) => b.pctOfCirculating));
@@ -1414,12 +1428,39 @@ function SellPressureSection({ report }: { report: ScanReport }) {
     <section className="space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold text-ink-300">抛压分布（还没卖的筹码在什么价位）</h2>
-        <span className="font-mono text-[10px] text-ink-500">
-          {byPnl
-            ? `现价 ${info.priceSol!.toExponential(2)} SOL/枚（窗口内最近成交反推）`
-            : info.priceNote ?? '现价不可用'}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] text-ink-500">
+            {byPnl
+              ? `现价 ${info.priceSol!.toExponential(2)} SOL/枚（窗口内最近成交反推）`
+              : info.priceNote ?? '现价不可用'}
+          </span>
+          {onRunDeep && (
+            <button
+              type="button"
+              onClick={onRunDeep}
+              disabled={deepPending}
+              title="逐地址拉取前 50 名持有人的完整历史，算出真实成本（实测约 2 分钟）"
+              className="rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-[10px] text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {deepPending ? '深度分析中…' : hasDeep ? '重新深度分析' : '深度分析（约 2 分钟）'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {hasDeep ? (
+        <div className="rounded-xl border border-safe/30 bg-safe/5 p-3 text-xs leading-relaxed text-ink-300">
+          ✓ 已用<span className="text-safe">完整历史</span>计算 {info.deepWallets} 个钱包的成本（覆盖前{' '}
+          {info.deepAddresses} 名持有人）—— 这些行不受成交窗口缺口影响，是**真实成本与真实已卖比例**。
+          其余行仍是窗口估算。表里用「完整历史 / 窗口估算」标出区别。
+        </div>
+      ) : (
+        <div className="rounded-xl border border-ink-700 bg-ink-900/40 p-3 text-xs leading-relaxed text-ink-400">
+          当前成本是**成交窗口估算**：窗口只覆盖一部分时间跨度，所以未卖筹码会被低估。
+          点右上角「深度分析」可逐地址拉完整历史（约 2 分钟），把成本换成真实值 ——
+          实测某币可分析钱包会从 14 个升到 43 个、未卖筹码从 1.0% 升到 12.8% 流通盘。
+        </div>
+      )}
 
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
@@ -1435,7 +1476,11 @@ function SellPressureSection({ report }: { report: ScanReport }) {
         <Stat
           label="可分析钱包"
           value={`${info.walletsAnalyzed}`}
-          sub={`成交配对率 ${num(info.attributionPct)}%`}
+          sub={
+            info.deepWallets > 0
+              ? `其中 ${info.deepWallets} 个用完整历史`
+              : `成交配对率 ${num(info.attributionPct)}%`
+          }
         />
         <Stat
           label="已出走 / 派发中"
@@ -1444,9 +1489,9 @@ function SellPressureSection({ report }: { report: ScanReport }) {
         />
       </div>
 
-      {info.attributionPct < 50 && (
+      {info.attributionPct !== undefined && info.attributionPct < 50 && (
         <div className="rounded-xl border border-warn/40 bg-warn/5 p-3 text-xs leading-relaxed text-ink-300">
-          ⚠️ 窗口内只有 <span className="font-mono text-warn">{num(info.attributionPct)}%</span> 的成交能配对出成本
+          ⚠️ 窗口内只有 <span className="font-mono text-warn">{num(info.attributionPct ?? 0)}%</span> 的成交能配对出成本
           （其余交易的代币变动记在别的账户上，无法归因到买家）。
           <span className="text-warn">下面的分布只覆盖一小部分筹码，不是全貌。</span>
         </div>
@@ -1500,7 +1545,7 @@ function SellPressureSection({ report }: { report: ScanReport }) {
                 <th className="px-3 py-2 text-right font-medium">盈亏</th>
                 <th className="px-3 py-2 text-right font-medium">未卖</th>
                 <th className="px-3 py-2 text-right font-medium">已卖</th>
-                <th className="px-3 py-2 font-medium">买入时间</th>
+                <th className="px-3 py-2 font-medium">最后成交 / 成本来源</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-ink-800">
@@ -1526,6 +1571,15 @@ function SellPressureSection({ report }: { report: ScanReport }) {
                   <td className="px-3 py-2 text-right font-mono text-ink-400">{num(w.soldPct)}%</td>
                   <td className="px-3 py-2 text-[10px] text-ink-500">
                     {w.lastTs ? new Date(w.lastTs * 1000).toISOString().slice(0, 10) : '—'}
+                    {w.source === 'deep' ? (
+                      <span className="ml-1 text-safe" title="逐地址完整历史算出，不受窗口缺口影响">
+                        完整历史
+                      </span>
+                    ) : (
+                      <span className="ml-1 text-ink-600" title="成交窗口估算，可能低估未卖量">
+                        窗口估算
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

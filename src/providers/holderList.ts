@@ -174,6 +174,21 @@ export async function fetchHolderAccounts(
   }
 }
 
+/**
+ * 取「已缓存的」枚举结果，**不发新请求**。
+ *
+ * 深度分析用它复用扫描时那次枚举 —— 重新枚举 9446 个账户要 0.6 秒且没必要，
+ * 更重要的是必须保证深度分析用的地址集合与报告里展示的是同一份。
+ * 没有缓存时返回 undefined，由调用方告诉用户「请先扫描一次」。
+ */
+export function getHolderEnumerationCached(mint: string): HolderEnumeration | undefined {
+  const hit = cache.get(mint);
+  if (!hit) return undefined;
+  // 深度流程可能隔一会儿才发起，这里放宽到 10 分钟（与明细缓存一致）
+  if (Date.now() - hit.at > THRESHOLDS.holders.overviewDetailTtlMs) return undefined;
+  return hit.data;
+}
+
 /** 内存缓存：明细分页时避免把 2.6MB 的全量数据反复拉一遍 */
 const cache = new Map<string, { at: number; data: HolderEnumeration; decimals: number }>();
 

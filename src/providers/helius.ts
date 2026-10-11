@@ -709,6 +709,15 @@ interface TxActivity {
    * 只记录金额 > 0 且方向明确的成交，避免把无法归因的交易算进某个人头上。
    */
   trades: TradeRecord[];
+  /** 有 SOL 变化但代币净变化为 0、无法归因到买家的成交笔数 */
+  unattributedCount: number;
+  /**
+   * 因「代币净变化为 0」而无法归因到任何买家的成交笔数。
+   *
+   * ⚠️ 必须有这个数：`trades` 只含配对成功的，分析器拿不到失败数就无法计算
+   * 真实配对率 —— 曾经因此把这个比例恒算成 100%，让「只覆盖一小部分筹码」
+   * 这条最关键的警告永远不出现。
+   */
 }
 
 /**
@@ -790,6 +799,9 @@ function classifyTx(
     if (tt.toUserAccount === trader) tokenNet += tt.tokenAmount ?? 0;
     if (tt.fromUserAccount === trader) tokenNet -= tt.tokenAmount ?? 0;
   }
+  // 配对失败要计数：分析器需要它算真实配对率
+  if (trader && sol > 0 && tokenNet === 0) acc.unattributedCount += 1;
+
   if (trader && sol > 0 && tokenNet !== 0) {
     // 创建/铸造交易单独标记：它带来的代币是「凭空得的」，没有买入成本
     const mintLike = tx.type === 'CREATE' || tx.type === 'TOKEN_MINT';
@@ -970,6 +982,7 @@ function analyzeTxs(
     mintedMints: new Set(),
     uniqueTraders: new Set(),
     trades: [],
+    unattributedCount: 0,
   };
   for (const tx of txs) {
     if (tx.transactionError) continue; // 失败的交易不算成交
@@ -987,6 +1000,13 @@ export interface MintActivityResult {
   createdSec?: number;
   /** 逐地址成交明细（最近窗口 + 最早窗口合并去重后），供钻石手维度使用 */
   trades?: TxActivity['trades'];
+  /**
+   * 窗口内因「代币净变化为 0」而无法归因到买家的成交笔数。
+   *
+   * ⚠️ 必须有这个数：`trades` 只含配对成功的，分析器拿不到失败数就无法算真实配对率 ——
+   * 曾经因此把这个比例恒算成 100%，让「只覆盖一小部分筹码」这条警告永远不出现。
+   */
+  unattributedTrades?: number;
   /** 最早窗口覆盖到的时间上界（秒）：超过它就没有「最早」数据了 */
   earlyWindowEndSec?: number;
   /** 最近窗口覆盖到的时间下界（秒）：早于它就没有「最近」数据了 */
@@ -1134,10 +1154,13 @@ export async function fetchMintActivity(
   // 两个窗口合并去重（同一签名只算一次），并如实带上窗口边界 ——
   // 中间那段没拉到的历史必须在报告里说明，否则「没看到卖」会被读成「没卖过」。
   const tradesBySig = new Map<string, TxActivity['trades'][number]>();
+  let unattributed = 0;
   const collect = (txs: HeliusTx[] | undefined) => {
     if (!txs) return;
-    const acc = analyzeTxs(txs, mint, undefined, decimals);
-    for (const t of acc.trades) tradesBySig.set(`${t.trader}:${t.side}:${t.ts}:${t.sol}`, t);
+    const before = analyzeTxs(txs, mint, undefined, decimals);
+    // 配对失败 = 有 SOL 变化但代币净变化为 0 的成交 —— 在 analyzeTxs 里数
+    unattributed += before.unattributedCount;
+    for (const t of before.trades) tradesBySig.set(`${t.trader}:${t.side}:${t.ts}:${t.sol}`, t);
   };
   if (recentRes.status === 'fulfilled') collect(recentRes.value);
   if (oldestRes.status === 'fulfilled') collect(oldestRes.value);
@@ -1158,6 +1181,7 @@ export async function fetchMintActivity(
     earlyBuyers,
     origin,
     ...(trades.length > 0 ? { trades } : {}),
+    unattributedTrades: unattributed,
     ...(ascEnd ? { earlyWindowEndSec: ascEnd } : {}),
     ...(descStart ? { recentWindowStartSec: descStart } : {}),
   };

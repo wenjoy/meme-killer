@@ -16,6 +16,9 @@ export default function Home() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cap, setCap] = useState<Capability | null>(null);
+  /** 深度任务：跑起来后轮询进度，完成后自动重扫（真实成本替换窗口估算） */
+  const [deep, setDeep] = useState<{ pct: number; done: number; total: number } | null>(null);
+  const [deepError, setDeepError] = useState<string | null>(null);
 
   // 启动时自检数据源，明确告诉用户哪些维度能真正生效
   useEffect(() => {
@@ -44,6 +47,48 @@ export default function Home() {
       setPending(false);
     }
   }, []);
+
+  /**
+   * 深度分析：逐地址拉完整历史算出**真实成本**。
+   *
+   * 实测 50 个地址 = 121 秒（11685 笔历史 / 133 页），所以必须
+   * 「启动任务 → 轮询进度 → 完成后自动重扫」，而不是一个同步请求。
+   */
+  const runDeep = useCallback(
+    async (address: string) => {
+      setDeepError(null);
+      setDeep({ pct: 0, done: 0, total: 0 });
+      try {
+        const start = await fetch('/api/deep', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mint: address }),
+        });
+        const started = await start.json();
+        if (!start.ok) throw new Error(started.error ?? `启动失败（${start.status}）`);
+        const id: string = started.id;
+        setDeep(started.progress ?? { pct: 0, done: 0, total: 0 });
+
+        // 轮询直到完成。间隔 3 秒：任务是 121 秒量级，再密就是浪费。
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const res = await fetch(`/api/deep?id=${id}`);
+          const job = await res.json();
+          if (!res.ok) throw new Error(job.error ?? `查询失败（${res.status}）`);
+          setDeep(job.progress);
+          if (job.state === 'done') break;
+          if (job.state === 'error') throw new Error(job.error ?? '深度分析失败');
+        }
+        // 深度结果已缓存，重扫一次即可让报告用上真实成本
+        await run(address);
+      } catch (err) {
+        setDeepError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setDeep(null);
+      }
+    },
+    [run],
+  );
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-12">
@@ -128,12 +173,42 @@ export default function Home() {
         </div>
       )}
 
+      {deep && (
+        <div className="mt-4 rounded-xl border border-accent/40 bg-accent/5 px-4 py-3">
+          <div className="flex items-baseline justify-between text-xs">
+            <span className="text-ink-200">
+              深度分析进行中 —— 逐地址拉取完整历史，算出**真实成本**（不是窗口估算）
+            </span>
+            <span className="font-mono text-ink-300">
+              {deep.pct}%（{deep.done}/{deep.total}）
+            </span>
+          </div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded bg-ink-800">
+            <div className="h-full bg-accent transition-all" style={{ width: `${deep.pct}%` }} />
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-400">
+            实测前 50 名持有人约需 <span className="text-ink-300">2 分钟</span>
+            （1 万多笔历史、上百次分页请求）。完成后会自动重新生成报告，
+            那时表里会标出哪些行用的是「完整历史」、哪些仍是「窗口估算」。
+            这一页可以放着不动。
+          </p>
+        </div>
+      )}
+
+      {deepError && (
+        <div className="mt-4 rounded-xl border border-danger/40 bg-danger/5 px-4 py-3 text-xs text-ink-300">
+          深度分析失败：{deepError}
+        </div>
+      )}
+
       {report && (
         <div className="mt-6">
           <Report
             report={report}
             onForceOverview={() => void run(report.token.mint, { forceOverview: true })}
             forcing={pending}
+            onRunDeep={() => void runDeep(report.token.mint)}
+            deepPending={deep !== null}
           />
         </div>
       )}

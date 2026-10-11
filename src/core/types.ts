@@ -624,6 +624,23 @@ export interface SellPressureInput {
   holderBalances?: Map<string, number>;
   /** 地址 → 分类（来自前 20 名表），用于标注买家类型 */
   kinds?: Map<string, string>;
+  /**
+   * 深度模式：前 N 名持有人的**完整历史**成交（不是窗口）。
+   *
+   * 有它的时候这些地址的成本用**全量历史**算（真实成本），
+   * 其余地址仍用窗口估算；两者混在一张表里时必须分别标注来源，
+   * 否则「窗口估算」和「完整历史」会被当成同一可信度。
+   */
+  deepTrades?: {
+    trader: string;
+    side: 'buy' | 'sell';
+    sol: number;
+    tokenAmount: number;
+    ts?: number;
+    mintLike?: true;
+  }[];
+  /** 深度模式覆盖了多少个地址 */
+  deepAddresses?: number;
 }
 
 export interface DiamondInput {
@@ -689,6 +706,8 @@ export interface SellPressureWallet {
   costSol: number;
   lastTs?: number;
   kind?: string;
+  /** 成本来源：deep = 逐地址完整历史（真实成本）；window = 成交窗口估算 */
+  source?: 'deep' | 'window';
 }
 
 /** 抛压分布总览 */
@@ -702,8 +721,14 @@ export interface SellPressureInfo {
    * 根本进不来，所以这只是全量持仓者的一小部分。
    */
   walletsAnalyzed: number;
-  /** 配对成功 / 窗口内全部成交 —— 直接体现数据完整度 */
-  attributionPct: number;
+  /**
+   * 配对成功 / 窗口内全部成交 —— 直接体现数据完整度。
+   *
+   * ⚠️ 只在纯窗口口径下有值。深度模式下多数地址用完整历史、不经窗口配对，
+   * 这个比例会失去意义（曾经分子含深度成交、分母仍是窗口笔数 → 报出 3344%），
+   * 因此那时不给这个数字，改用 `deepWallets` / `deepAddresses` 表达覆盖度。
+   */
+  attributionPct?: number;
   /** 未卖筹码合计（代币） */
   totalUnsoldTokens: number;
   /** 未卖筹码按成本折算的 SOL 总额 */
@@ -722,6 +747,10 @@ export interface SellPressureInfo {
   topHoldersAtProfit: SellPressureWallet[];
   /** 已基本卖光的钱包数量（不再构成抛压，但要看得到） */
   exitedWallets: number;
+  /** 成本来自**完整历史**（深度模式）的钱包数 —— 其余是窗口估算 */
+  deepWallets: number;
+  /** 深度模式覆盖的地址数 */
+  deepAddresses: number;
   /** 通过铸造/创建免费拿到筹码的地址数（不计入成本统计，单列） */
   mintedWallets: number;
   /** 这些地址手上还没卖的免费筹码量 */

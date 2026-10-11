@@ -37,6 +37,7 @@ import {
   rpcUrl,
 } from './helius';
 import { resolveCreator } from './creator';
+import { getDeepResultCached } from './deepJobs';
 import {
   buildHolderOverview,
   cacheOwnerList,
@@ -255,6 +256,8 @@ export function mergeInputs(parts: {
 
 
   // ── 抛压分布：需要每笔成交的代币数量才能反推成本价 ────────────────
+  // 深度模式的结果（如果这个代币做过）：优先于窗口估算
+  const deep = getDeepResultCached(mint);
   let sellPressure: ScanInput['sellPressure'];
   if (activity.trades && activity.trades.length > 0) {
     const pairable = activity.trades.filter((t) => t.tokenAmount > 0);
@@ -277,11 +280,14 @@ export function mergeInputs(parts: {
         ...(t.ts !== undefined ? { ts: t.ts } : {}),
         ...(t.mintLike ? { mintLike: true as const } : {}),
       })),
-      windowTrades: activity.trades.length,
+      // 窗口内全部成交 = 配对成功的 + 配对失败的（后者在 provider 层已被丢弃）
+      windowTrades: activity.trades.length + (activity.unattributedTrades ?? 0),
       nowSec,
       circulatingTokens: (supply * circPct) / 100,
       ...(holderBalances ? { holderBalances } : {}),
       ...(kindMap.size > 0 ? { kinds: kindMap } : {}),
+      // 做过深度分析的话，把完整历史并进来（那些地址的成本就是真实值了）
+      ...(deep ? { deepTrades: deep.trades, deepAddresses: deep.addresses.length } : {}),
     };
   }
 
