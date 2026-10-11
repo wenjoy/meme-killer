@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { DEFAULT_TAB, TAB_META as T } from './reportTabs';
 import type { ReactNode } from 'react';
 
-import { DIMENSION_ORDER, SEVERITY_ORDER } from '@/core/constants';
+import { DIMENSION_ORDER, HOLDER_KIND_LABELS, SEVERITY_ORDER } from '@/core/constants';
 
 import { THRESHOLDS } from '@/core/constants';
 import type {
@@ -848,16 +848,10 @@ function TopHoldersSection({ report }: { report: ScanReport }) {
   const rows = Array.isArray(m?.topHolders) ? (m.topHolders as HolderRow[]) : [];
   if (rows.length === 0) return null;
 
-  const KIND_LABEL: Record<HolderRow['kind'], string> = {
-    pool: '流动性池',
-    burn: '销毁地址',
-    timelock: '时间锁仓',
-    custody: '程序托管',
-    dev: 'creator 本人',
-    related: '与部署者关联',
-    sniper: '狙击仓位',
-    retail: '散户',
-  };
+  // 分类名统一来自 constants（之前这里有一份副本，改名字会漏改）
+  const KIND_LABEL: Record<HolderRow['kind'], string> = Object.fromEntries(
+    Object.entries(HOLDER_KIND_LABELS).map(([k, v]) => [k, v.long]),
+  ) as Record<HolderRow['kind'], string>;
   const countedTop10 = rows.filter((r) => r.counted).slice(0, 10);
   const countedSum = countedTop10.reduce((s, r) => s + r.pct, 0);
   const circulatingPct = Number(m?.circulatingPct ?? 0);
@@ -1222,16 +1216,9 @@ function AllHoldersSection({ report }: { report: ScanReport }) {
 
   if (!overview) return null;
 
-  const KIND_LABEL: Record<string, string> = {
-    pool: '池',
-    burn: '销毁',
-    timelock: '锁仓',
-    custody: '托管',
-    dev: 'creator',
-    related: '关联',
-    sniper: '狙击',
-    retail: '散户',
-  };
+  const KIND_LABEL: Record<string, string> = Object.fromEntries(
+    Object.entries(HOLDER_KIND_LABELS).map(([k, v]) => [k, v.short]),
+  );
   const totalPages = meta ? Math.max(1, Math.ceil(meta.filtered / meta.pageSize)) : 1;
   const csvHref = `/api/holders?${query}&format=csv`;
 

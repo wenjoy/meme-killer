@@ -87,6 +87,25 @@ export const THRESHOLDS = {
     singleWalletWarn: 10, // ⚠️ 单一非 dev 钱包 > 10%
     devClusterDanger: 15, // ⚠️ dev + 关联钱包合计 > 15%
     minHolderCount: 100, // 持有人数 < 100 且集中 → 无出货深度
+    /**
+     * 「百分比口径」生效所需的最少持有人数。
+     *
+     * 实测 44 个代币的分组中位数（Top10 占流通盘 vs 占总供应）：
+     *   <20 人      100.0%  vs 51.1%   （差 48.9pp）
+     *   20–100 人    90.8%  vs 31.0%   （差 32.1pp）
+     *   100–1000 人  48.3%  vs 22.9%   （差 21.6pp）
+     *   1000–10000   21.1%  vs 18.3%   （差  1.9pp）
+     *   >10000 人    23.7%  vs 22.2%   （差  1.9pp）
+     *
+     * 分界线在 1000 人附近：达到这个量级时两种口径几乎一致（差 1.9pp），
+     * 说明分母换成流通盘**是对的**；而持有人 < 100 时分母本身太小
+     * （剔除池后可能只剩几万个代币），几个散户就能占满 → 恒等于 100%，
+     * 这不是「更准确」，是**在小样本上失真**。
+     *
+     * 所以人数不足时不再输出「占流通盘 X%」并据此判风险，
+     * 改为按「人数 + 已知类型分布」描述，并写明百分比在此不可用。
+     */
+    percentageCaliberMinHolders: 1000,
     sniperWalletDanger: 25, // ⚠️ 狙击钱包持仓占比（只在这一处判定，避免两个维度重复计分）
     custodyWarnPct: 1, // 程序托管（多签等）占比低于此值只是尘埃，不值得单独提示
     /**
@@ -281,6 +300,29 @@ export const CUSTODY_PROGRAMS: Record<string, { kind: CustodyKind; label: string
  * 必须计入集中度，只是单独标注出来让用户看得见。
  */
 export const EXCLUDED_HOLDER_KINDS = new Set(['pool', 'burn', 'timelock']);
+
+/**
+ * 持仓分类的显示名（**唯一来源**）。
+ *
+ * 之前 UI 里散着两份（长名一份、短名一份），分析器再要一份就变成三份 ——
+ * 改一个名字要改三个地方，漏一处就会出现「同一分类在两个表里叫不同名字」。
+ * 这里同时提供长名与短名，短名给窄列用。
+ */
+export const HOLDER_KIND_LABELS: Record<string, { long: string; short: string }> = {
+  pool: { long: '流动性池', short: '池' },
+  burn: { long: '销毁地址', short: '销毁' },
+  timelock: { long: '时间锁仓', short: '锁仓' },
+  custody: { long: '程序托管', short: '托管' },
+  dev: { long: 'creator 本人', short: 'creator' },
+  related: { long: '与部署者关联', short: '关联' },
+  sniper: { long: '狙击仓位', short: '狙击' },
+  retail: { long: '散户', short: '散户' },
+};
+
+/** 取长名，未知分类回退到原始 key（绝不显示成空白） */
+export function holderKindLabel(kind: string): string {
+  return HOLDER_KIND_LABELS[kind]?.long ?? kind;
+}
 
 /**
  * 已知 AMM / 联合曲线程序。

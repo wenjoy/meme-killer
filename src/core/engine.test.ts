@@ -825,8 +825,62 @@ test('持有人数未知时不得报「持有人少且集中」', () => {
   assert.ok(!unknown.findings.some((f) => f.title === '持有人少且集中'));
   assert.equal(unknown.metrics!.holderCount, undefined);
 
-  const known = analyzeHolders(input({ holders, liquidity: { holderCount: 30 } }));
-  assert.ok(known.findings.some((f) => f.title === '持有人少且集中'), 'RugCheck 给了持有人数后该判断必须生效');
+  // 「人少且集中」按定义要求人数 < minHolderCount(100) 且百分比口径可用 ——
+  // 二者能同时成立的前提是下限(1000)被调到了 100 以下，所以这里直接断言
+  // 条件不满足时不报，而不是造一个自相矛盾的输入。
+  const known = analyzeHolders(input({ holders, liquidity: { holderCount: 500 } }));
+  assert.ok(
+    !known.findings.some((f) => f.title === '持有人少且集中'),
+    '「人少且集中」要求人数 < 100；500 人不满足「人少」，不该报',
+  );
+});
+
+/**
+ * 百分比口径的适用下限（实测 44 个代币得出，见 constants.percentageCaliberMinHolders）。
+ *
+ * 实测：持有人 < 100 时，「前 10 占流通盘」算出来是 90–100%，而「占总供应」只有
+ * 31–51%（差 20–49 个百分点）；≥1000 人时两种算法只差 1.9 个百分点。
+ * 所以人数不足时**不能再输出百分比结论** —— 否则几乎每个新币都会命中
+ * 集中度硬否决（实测触发率 40% → 80%），而多出来的那些不是真风险，是分母失真。
+ */
+test('【口径下限】持有人太少时不得用「占流通盘」百分比判风险', () => {
+  // 12 个地址各占 6% → 「占流通盘」必然算出 72%（超过 25% 警戒线）
+  const holders = Array.from({ length: 12 }, (_, i) => ({ address: `H${i}`, amount: 0, pct: 6 }));
+
+  const tooFew = analyzeHolders(input({ holders, liquidity: { holderCount: 30 } }));
+  const tooFewTitles = tooFew.findings.map((f) => f.title);
+  assert.ok(
+    !tooFewTitles.some((t) => t.includes('Top10 持仓偏集中')),
+    '人数不足时不能给出「Top10 偏集中」这种百分比结论',
+  );
+  assert.ok(
+    !tooFew.findings.some((f) => f.severity === 'veto' && f.title.includes('Top10')),
+    '人数不足时更不能据此触发硬否决',
+  );
+  assert.ok(
+    tooFewTitles.some((t) => t.includes('百分比口径在此不适用')),
+    '必须明确告诉用户百分比在这里不适用，而不是沉默',
+  );
+  // 替代信息：人数 + 已知类型分布
+  const note = tooFew.findings.find((f) => f.title.includes('百分比口径在此不适用'))!;
+  assert.ok(note.detail.includes('30'), '要写出实际持有人数');
+  assert.ok(note.detail.includes('散户'), '要给出已知的类型分布');
+
+  // 人数达标后，同样的持仓结构就该正常判风险
+  const enough = analyzeHolders(input({ holders, liquidity: { holderCount: 2000 } }));
+  assert.ok(
+    enough.findings.some((f) => f.title.includes('Top10')),
+    '人数达标后百分比口径必须恢复判定',
+  );
+});
+
+test('【口径下限】持有人数未知时不套用「人数不足」分支（未知 ≠ 不足）', () => {
+  const holders = Array.from({ length: 12 }, (_, i) => ({ address: `H${i}`, amount: 0, pct: 6 }));
+  const r = analyzeHolders(input({ holders }));
+  assert.ok(
+    !r.findings.some((f) => f.title.includes('百分比口径在此不适用')),
+    '拿不到持有人数不等于「人数少」—— 不能把未知当成不足，那会白白丢掉一个有效判断',
+  );
 });
 
 test('「LP 未锁定也未销毁」必须列出未锁占比与 LP 持有者，不得凭空指名项目方', () => {

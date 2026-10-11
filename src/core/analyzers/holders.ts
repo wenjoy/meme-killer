@@ -9,6 +9,7 @@
 import {
   BURN_ADDRESSES,
   EXCLUDED_HOLDER_KINDS,
+  holderKindLabel,
   POOL_LABEL_PATTERN,
   THRESHOLDS,
   scoreFromFindings,
@@ -200,10 +201,45 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     );
   }
 
-  if (top10Pct > t.top10Danger) {
+  // ⚠️ 持有人太少时，「占流通盘 X%」这个口径会失真，不能据此判风险。
+  //
+  // 实测 44 个代币：持有人 < 100 时，同一批代币用「占流通盘」算出的中位数
+  // 是 90–100%，而「占总供应」只有 31–51%（差 20–49 个百分点）；
+  // 持有人 ≥ 1000 时两种算法只差 1.9 个百分点。
+  // 原因：剔除池/burn 后的流通盘本身就很小，几个散户就能占满分母 →
+  // 恒等于 100%，于是几乎每个新币都会命中簇集中的硬否决（实测触发率 40% → 80%），
+  // 而多出来的那些**不是真风险**，是分母失真。
+  //
+  // 所以人数不足时改用「人数 + 已知类型分布」来描述，并明确写出百分比在此不适用。
+  // 持有人总数来自 RugCheck；undefined = 拿不到，不是 0（不是 0！别把「未知」当「没有」）
+  const holderCount = data.liquidity?.holderCount;
+
+  const caliberUsable =
+    holderCount === undefined || holderCount <= 0 || holderCount >= t.percentageCaliberMinHolders;
+
+  if (!caliberUsable) {
+    const kinds = classified.filter((h) => h.pct > 0);
+    const desc = (['pool', 'dev', 'related', 'sniper', 'retail'] as const)
+      .map((k) => ({ k, n: kinds.filter((h) => h.kind === k).length }))
+      .filter((x) => x.n > 0)
+      .map((x) => `${holderKindLabel(x.k)} ${x.n}`)
+      .join('、');
+    add(
+      'high',
+      `持有人仅 ${holderCount} 个 —— 百分比口径在此不适用`,
+      `这个代币只有 ${holderCount} 个持币地址（低于 ${t.percentageCaliberMinHolders} 个的统计下限），` +
+        `前 10 名各自的占比已失去统计意义：剔除池/销毁后的流通盘本身很小，` +
+        '少数几个地址就能占满分母。实测这类代币用「占流通盘」算出来的集中度中位数是 90–100%，' +
+        '而换回「占总供应」只有 31–51% —— 差 20–49 个百分点，说明是**分母失真**而不是真的更集中。\n' +
+        `前 10 名的已知构成：${desc || '无法分类'}。` +
+        '⚠️ 人少本身就是最大的风险：没有出货深度，任何一笔卖出都可能砸穿价格。' +
+        '请直接参考持仓明细逐个地址核对，不要依赖上面的集中度数字。',
+    );
+  } else if (top10Pct > t.top10Danger) {
     veto(
       'Top10 持仓过度集中',
-      `剔除池 / burn / 锁仓后，前 10 大持有者占流通盘 ${top10Pct.toFixed(1)}%（阈值 ${t.top10Danger}%）。少数地址可轻易砸盘。`,
+      `剔除池 / burn / 锁仓后，前 10 大持有者占流通盘 ${top10Pct.toFixed(1)}%（阈值 ${t.top10Danger}%）。少数地址可轻易砸盘。` +
+        `（该代币有 ${holderCount} 个持有人，百分比口径有效。）`,
     );
   } else if (top10Pct > t.top10Warn) {
     add('medium', 'Top10 持仓偏集中', `前 10 大持有者占流通盘 ${top10Pct.toFixed(1)}%，超过 ${t.top10Warn}% 警戒线。`);
@@ -342,9 +378,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     );
   }
 
-  // 持有人总数来自 RugCheck；undefined = 拿不到，不是 0
-  const holderCount = data.liquidity?.holderCount;
-  if (holderCount !== undefined && holderCount > 0 && holderCount < t.minHolderCount && top10Pct > t.top10Warn) {
+  if (holderCount !== undefined && holderCount > 0 && holderCount < t.minHolderCount && caliberUsable && top10Pct > t.top10Warn) {
     add('high', '持有人少且集中', `仅 ${holderCount} 个持有人，配合 ${top10Pct.toFixed(1)}% 的集中度，缺乏出货深度。`);
   }
 
