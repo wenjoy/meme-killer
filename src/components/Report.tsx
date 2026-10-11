@@ -473,9 +473,8 @@ export function Report({
       />
 
       <p className="rounded-lg border border-ink-700 bg-ink-900/40 px-4 py-3 text-xs leading-relaxed text-ink-400">
-        本报告由链上与公开数据自动生成，<span className="text-ink-300">不构成投资建议</span>。
-        meme 币归零是常态 —— 评分低只代表「未发现明显问题」，不代表安全。
-        任何仓位都请自行控制风险，并交叉验证 RugCheck、DexScreener 等平台。
+        由链上与公开数据自动生成，<span className="text-ink-300">不构成投资建议</span>。
+        评分低只代表「未发现明显问题」，不代表安全 —— meme 币归零是常态。
       </p>
     </div>
   );
@@ -793,8 +792,8 @@ function TopHoldersSection({ report }: { report: ScanReport }) {
         </table>
       </div>
       <p className="text-[11px] leading-relaxed text-ink-400">
-        链上 RPC 只返回前 20 大持仓账户；更深的分布需要索引器，所以这 20 行是**能核对到的全部**，
-        不代表只有 20 个持有人。「计入集中度 = 否」的三类（池、销毁、锁仓）已从 Top10 与巨鲸判断中剔除，
+        以下是**能核对到的**前 20 名，不代表只有 20 个持有人。
+        「计入集中度 = 否」的三类（池、销毁、锁仓）已从 Top10 与巨鲸判断中剔除；
         托管（多签）不剔除 —— 它可以随时签名转出。
       </p>
     </section>
@@ -859,8 +858,7 @@ function HoldersOverviewSection({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold text-ink-300">全量持有人分布（链上枚举）</h2>
         <span className="font-mono text-[10px] text-ink-500">
-          {overview.source === 'rpc' ? 'RPC 全量枚举' : 'DAS 分页兜底（较慢）'}
-          {overview.truncated && ' · ⚠️ 未取全'}
+          {overview.truncated ? '⚠️ 未取全' : '已取全'}
         </span>
       </div>
 
@@ -915,14 +913,12 @@ function HoldersOverviewSection({
       {overview.curve.length >= 2 && <ConcentrationCurve points={overview.curve} />}
 
       <p className="text-[11px] leading-relaxed text-ink-400">
-        口径说明：这里按 **owner 合并**统计（同一地址的多个 token account 算一个人），
-        账户数 {overview.accountsTotal.toLocaleString()} 个、有余额 {overview.accountsWithBalance.toLocaleString()} 个
-        {overview.reportedHolders !== undefined && <>、RugCheck 报 {overview.reportedHolders.toLocaleString()} 个持有人</>}
-        {twoCaliber && <> —— <span className="text-warn">三个口径对不上，差额不做推断</span></>}。
-        池 / 销毁 / 锁仓合计剔除 {num(overview.excludedPct)}%；更深的持仓只能按地址归类，
-        托管（多签/锁仓）判定只覆盖前 20 名（需要逐账户反查控制程序）。
-        枚举到的持仓合计占总量 {num(overview.coveredPct)}%
-        {overview.coveredPct < 99 && '（不到 100% 说明有持仓没被枚举到，分布不完整）'}。
+        按 **owner 合并**统计（同一钱包的多个持币账户算一个人）：
+        账户 {overview.accountsTotal.toLocaleString()} 个、有余额 {overview.accountsWithBalance.toLocaleString()} 个
+        {overview.reportedHolders !== undefined && <>、RugCheck 报 {overview.reportedHolders.toLocaleString()} 个</>}
+        {twoCaliber && <> —— <span className="text-warn">口径对不上，差额不做推断</span></>}。
+        剔除池 / 销毁 / 锁仓 {num(overview.excludedPct)}%，枚举覆盖总量 {num(overview.coveredPct)}%
+        {overview.coveredPct < 99 && '（不到 100%，分布不完整）'}。
       </p>
     </section>
   );
@@ -1378,12 +1374,10 @@ function DiamondSection({ report }: { report: ScanReport }) {
       )}
 
       <p className="text-[11px] leading-relaxed text-ink-400">
-        口径：只统计成交窗口里出现过的 {info.tradesAnalyzed} 笔成交（最近 100 笔 + 最早{' '}
-        {THRESHOLDS.liquidity.sniperWindowTrades} 笔，按交易去重，中间的历史没拉到）；已排除 creator / 关联钱包{' '}
-        {info.excludedCount} 个、高频机器人 {info.robotCount} 个；「仍持仓」用全量持有人枚举的余额交叉验证，
-        卖光的不算。
-        <span className="text-ink-300">本维度权重为 0，不参与总分</span> ——
-        它描述筹码在谁手里，不回答该不该买；新币天然没人卖过，拿得住不等于利好。
+        样本 {info.tradesAnalyzed} 笔成交（最近 100 笔 + 最早 {THRESHOLDS.liquidity.sniperWindowTrades} 笔）；
+        已排除 creator / 关联钱包 {info.excludedCount} 个、高频机器人 {info.robotCount} 个；卖光的不算。
+        <span className="text-ink-300">权重为 0，不参与总分</span> ——
+        它描述筹码在谁手里，不回答该不该买；拿得住不等于利好。
       </p>
     </section>
   );
@@ -1595,7 +1589,7 @@ function SellPressureSection({
 
       <p className="text-[11px] leading-relaxed text-ink-400">
         口径：{info.windowNote}
-        盈亏用「窗口内最近一笔成交反推」的隐含现价计算，<span className="text-ink-300">不是行情接口的价</span>；
+        盈亏按「最近一笔成交反推」的现价计算，<span className="text-ink-300">不是实时行情价</span>；
         超过 {Math.round(THRESHOLDS.sellPressure.maxPriceAgeSec / 3600)} 小时的陈旧价格会停用这一栏。
         本维度权重为 0，不参与总分。
       </p>

@@ -115,7 +115,7 @@ export default function Home() {
         className="rounded-xl border border-ink-700 bg-ink-900/60 p-4"
       >
         <label htmlFor="mint" className="mb-2 block text-xs text-ink-400">
-          输入 Solana mint 地址（代币合约地址）
+          输入 Solana mint 地址
         </label>
         <div className="flex flex-col gap-2 sm:flex-row">
           <input
@@ -141,7 +141,7 @@ export default function Home() {
         <div className="relative mt-6 overflow-hidden rounded-xl border border-ink-700 bg-ink-900/60 px-4 py-3">
           <div className="scanning-sweep absolute inset-0" />
           <p className="relative text-sm text-ink-300">
-            正在采集链上数据与市场数据…（含多次 RPC 与 API 往返，通常 3–15 秒）
+            正在采集链上数据…
           </p>
         </div>
       )}
@@ -151,7 +151,7 @@ export default function Home() {
           <p className="text-sm font-medium text-danger">扫描失败</p>
           <p className="mt-1 text-xs leading-relaxed text-ink-300">{error}</p>
           <p className="mt-2 text-[11px] text-ink-400">
-            若为 401/403，请检查 HELIUS_API_KEY；若为超时，请确认 SOLANA_RPC_URL 可用（公共节点限流严重）。
+            请稍后重试。若持续失败，可能是数据源暂时不可用。
           </p>
         </div>
       )}
@@ -171,10 +171,7 @@ export default function Home() {
                 )}
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-400">
-                同一时间只跑一个深度任务：每个任务会发出上百次分页请求，
-                并发跑会撞上数据源限流，而限流的表现是**静默丢数据** ——
-                那会让一部分钱包悄悄退回窗口估算，看起来完成了其实缺了一块。
-                所以这里用等待换结果完整。这一页可以放着不动。
+                一次只跑一个深度任务，避免触发数据源限流导致结果不完整。可以离开这一页。
               </p>
             </>
           ) : (
@@ -191,9 +188,7 @@ export default function Home() {
                 <div className="h-full bg-accent transition-all" style={{ width: `${deep.pct}%` }} />
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-ink-400">
-                实测前 50 名持有人约需 <span className="text-ink-300">2 分钟</span>
-                （1 万多笔历史、上百次分页请求）。完成后会自动重新生成报告，
-                那时表里会标出哪些行用的是「完整历史」、哪些仍是「窗口估算」。
+                前 50 名持有人约需 <span className="text-ink-300">2 分钟</span>，完成后自动重新生成报告。
               </p>
             </>
           )}
@@ -218,41 +213,6 @@ export default function Home() {
         </div>
       )}
 
-      {!report && !pending && !error && (
-        <section className="mt-6 grid gap-3 sm:grid-cols-2">
-          <div className="rounded-xl border border-ink-700 bg-ink-900/40 p-4">
-            <h2 className="mb-2 text-sm font-semibold text-ink-300">怎么用</h2>
-            <ol className="space-y-1.5 text-xs leading-relaxed text-ink-400">
-              <li>1. 从 Pump.fun / DexScreener 复制代币的 mint 地址</li>
-              <li>2. 粘贴到上方输入框，点「开始体检」</li>
-              <li>
-                3. 先看有没有<span className="text-danger">硬否决</span>——有就直接放弃
-              </li>
-              <li>4. 再看各维度明细与仓位建议，注意标注「未采集」的维度</li>
-            </ol>
-          </div>
-          <div className="rounded-xl border border-ink-700 bg-ink-900/40 p-4">
-            <h2 className="mb-2 text-sm font-semibold text-ink-300">五个维度</h2>
-            <ul className="space-y-1.5 text-xs leading-relaxed text-ink-400">
-              <li>
-                <span className="text-ink-200">合约安全</span> 30% · 权限是否放弃、Token-2022 作恶扩展、LP 锁定/销毁（RugCheck）
-              </li>
-              <li>
-                <span className="text-ink-200">流动性 &amp; 资金流</span> 25% · 曲线真实 SOL、刷量、蜜罐、抛压
-              </li>
-              <li>
-                <span className="text-ink-200">持币集中度</span> 20% · 剔除池与 burn 后的 Top10 占比
-              </li>
-              <li>
-                <span className="text-ink-200">开发者历史</span> 15% · 历史发币数量、dev 卖出（需 Helius Enhanced API）
-              </li>
-              <li>
-                <span className="text-ink-200">社交热度</span> 10% · 需第三方社交数据源（未接入则不计分）
-              </li>
-            </ul>
-          </div>
-        </section>
-      )}
     </main>
   );
 }

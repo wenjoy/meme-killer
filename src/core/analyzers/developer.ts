@@ -55,11 +55,6 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   // 实测同一个代币上「创建交易付款方」与「程序记录的 creator」可以完全不同
   // （打包器发币、再把 creator 转给真 dev）。此时下面所有 dev 结论说的是
   // **creator**，不是那个付款的钱包 —— 不说清楚读者会追错人。
-  const SOURCE_LABEL: Record<string, string> = {
-    curve: 'pump.fun 曲线程序状态里的 creator 字段（最权威）',
-    metadata: '链上 Metaplex metadata 的 creators[0]',
-    'create-tx': '创建交易的付款方（**推断值**：打包器发币时这不是真 dev）',
-  };
   if (!d.creator) {
     add(
       'medium',
@@ -81,9 +76,9 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
     add(
       'low',
       '创建钱包与 creator 不是同一个地址',
-      `本报告的开发者维度按 creator \`${d.creator}\` 计算（来源：${SOURCE_LABEL[d.creatorSource ?? ''] ?? d.creatorSource}）；` +
+      `本报告的开发者维度按 creator \`${d.creator}\` 计算，` +
         `而创建交易的付款方是 \`${d.launchWallet}\` —— 付费发币的钱包不一定是 dev` +
-        '（打包器/launchpad 发币、再把 creator 转给真 dev 很常见），两者不要混为一谈。',
+        '（打包器 / launchpad 发币、再把 creator 转给真 dev 很常见），两者不要混为一谈。',
     );
   }
 
