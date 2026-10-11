@@ -189,6 +189,11 @@ export function getHolderEnumerationCached(mint: string): HolderEnumeration | un
   return hit.data;
 }
 
+/** 测试用：直接塞一份枚举进缓存，避免测试里真的去拉链上数据 */
+export function cacheHolderEnumerationForTest(mint: string, data: HolderEnumeration): void {
+  cache.set(mint, { at: Date.now(), data, decimals: 0 });
+}
+
 /** 内存缓存：明细分页时避免把 2.6MB 的全量数据反复拉一遍 */
 const cache = new Map<string, { at: number; data: HolderEnumeration; decimals: number }>();
 

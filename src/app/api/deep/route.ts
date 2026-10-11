@@ -32,7 +32,14 @@ export async function POST(request: Request) {
 
   try {
     const job = await startDeepJob(mint);
-    return NextResponse.json({ id: job.id, state: job.state, progress: job.progress });
+    return NextResponse.json({
+      id: job.id,
+      state: job.state,
+      progress: job.progress,
+      ...(job.state === 'queued' && job.queuePosition !== undefined
+        ? { queuePosition: job.queuePosition, etaSec: job.etaSec }
+        : {}),
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // 需要先做一次普通扫描（深度模式复用枚举结果，不重复枚举 9446 个账户）
@@ -55,6 +62,10 @@ export async function GET(request: Request) {
     id: job.id,
     state: job.state,
     progress: job.progress,
+    // 排队信息：让用户知道「还要等多久、前面有几个」，而不是干等一个 0% 的进度条
+    ...(job.state === 'queued' && job.queuePosition !== undefined
+      ? { queuePosition: job.queuePosition, etaSec: job.etaSec }
+      : {}),
     ...(job.state === 'done' ? { result: job.result, warnings: job.warnings } : {}),
     ...(job.state === 'error' ? { error: job.error } : {}),
   });
