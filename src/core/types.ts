@@ -127,6 +127,38 @@ export interface ContractInfo {
      */
     withdrawablePct?: number;
     /**
+     * 该池的 LP mint 地址 —— 上面所有比例都能拿它在链上复核。
+     */
+    lpMint?: string;
+    /**
+     * **已销毁**的 LP 占比（%），由链上核对得出（不是 RugCheck 的口径推断）：
+     * `历史铸造量 − 当前链上供应量 = 已销毁`。LP 凭证一旦销毁就无法恢复，
+     * 这是比「锁定」更硬的结论。
+     */
+    burnedPct?: number;
+    /**
+     * 销毁核对的原始数字（`everMinted = live + burned`），用于让人自己复算。
+     */
+    lpAudit?: { everMinted: number; live: number; burned: number };
+    /**
+     * 仍流通的 LP 分散在几个**普通钱包**里（不含锁仓合约与销毁地址）。
+     * RugCheck 的持有者列表最多 20 条，所以 ≥20 时它是下限。
+     */
+    circulatingHolderCount?: number;
+    /**
+     * 流通 LP 中占比最大的那个普通钱包持有的份额（%）。
+     *
+     * ⚠️ 分母是**流通量**而不是历史铸造量：实测 `9raUVuze…pump` 的最大持有者
+     * 只占全量 12.4%，却占流通量的 33.3% —— 判断「一个人能撤走多少池子」
+     * 必须用流通口径。
+     */
+    topCirculatingHolderPct?: number;
+    /**
+     * 项目方（RugCheck 标注 CREATOR 的地址）持有流通 LP 的份额（%）。
+     * 只有这个数是撤池跑路的直接风险；第三方各自添加的流动性不是。
+     */
+    creatorLpPct?: number;
+    /**
      * LP 凭证的持有者明细（RugCheck 按链上 LP mint 余额给出，最多取前 3）。
      *
      * 用于核对「未锁的那部分到底在谁手里」—— 没有这份明细就只能说

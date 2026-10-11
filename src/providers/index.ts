@@ -17,6 +17,7 @@ import type { FieldOrigin, LiquidityInfo, RawHolder, ScanInput, ScanMeta, ScanRe
 import { fetchDexScreener } from './dexscreener';
 import {
   fetchDeveloper,
+  fetchLpMintSupply,
   fetchMintActivity,
   fetchOnChain,
   hasEnhancedApi,
@@ -221,7 +222,8 @@ export async function collectAndScan(
         })
       : fetchDexScreener(mint),
     fetchMintActivity(mint, 0, warnings),
-    fetchRugCheck(mint),
+    // 传入链上 LP 供应量的读法：把「RugCheck 说锁定 x%」核成「已销毁 y%」
+    fetchRugCheck(mint, fetchLpMintSupply),
   ]);
 
   Object.assign(origins, onchain.origins);

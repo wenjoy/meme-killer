@@ -637,6 +637,32 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
   return { token, contract: contractRead ? contract : null, holders, curve, origins };
 }
 
+/**
+ * 读某个 LP mint 的链上当前供应量（最小单位）。
+ *
+ * 用途：RugCheck 的 `lpTotalSupply` 是**历史铸造总量**，`lpUnlocked` 是当前流通量，
+ * 两者相减就是已销毁量。但这两个数都来自 RugCheck，必须用链上读数复核一次 ——
+ * 实测 `9raUVuze…pump`：RugCheck 说锁定 62.86%，链上核对 LP mint 供应量
+ * 2,477,306,894,096，与 `lpUnlocked` 完全一致，差额 4,193,409,129,896 已销毁。
+ * 拿不到就返回 undefined（调用方必须当作「无法判定」，不得当成 0）。
+ */
+export async function fetchLpMintSupply(lpMint: string): Promise<number | undefined> {
+  try {
+    const conn = new Connection(rpcUrl(), {
+      commitment: 'confirmed',
+      fetch: timedFetch(RPC_TIMEOUT_MS),
+    });
+    const info = await conn.getParsedAccountInfo(new PublicKey(lpMint), 'confirmed');
+    const data = info.value?.data;
+    if (!data || typeof data !== 'object' || !('parsed' in data)) return undefined;
+    const supply = (data.parsed as { info?: { supply?: string } }).info?.supply;
+    const n = Number(supply);
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** DAS `mint_extensions` 的 snake_case key → 我们的扩展名 */
 const DAS_EXTENSION_MAP: Record<string, string> = {
   transfer_hook: 'transferHook',

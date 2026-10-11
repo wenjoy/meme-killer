@@ -333,3 +333,110 @@ test('未锁部分全在普通钱包且集中在一个地址 → 仍然是 singl
   assert.equal(r.lp?.holder, 'CreatorWallet1111111111111111111111111111111');
   assert.equal(r.lp?.withdrawablePct, 100);
 });
+
+// ── 真实案例：RugCheck 的「锁定比例」其实就是「已销毁比例」 ──────────
+// 9raUVuze…pump：历史铸造 6,670,716,023,992，链上供应 2,477,306,894,096，
+// 差额 4,193,409,129,896（62.86%）已销毁。旧实现按字面读成「未锁定也未销毁」。
+const LIVE_MINT = '3HWyWwRPBrAn5T2fFdiWizQqE3ktQ48BTJkuj7jdkZQ2';
+const realReport = () => ({
+  markets: [
+    {
+      pubkey: 'CtxHhwboVTtRf1kC4Zwfz8Zf8bNW78N2uuR3oZX5VFKb',
+      marketType: 'pump_fun_amm',
+      mintLP: LIVE_MINT,
+      lp: {
+        lpLockedPct: 62.86295376409249,
+        lpLocked: 4_193_409_129_896,
+        lpUnlocked: 2_477_306_894_096,
+        lpTotalSupply: 6_670_716_023_992,
+        baseUSD: 124_961,
+        quoteUSD: 124_547,
+        holders: [
+          { owner: 'A6QVMEvCH8xQ4o7nx2tkob42MsYGuPcKE4hwx5Zvj9kj', pct: 12.361220436821114 },
+          { owner: '4JBz4tAKgAmxjDPHHi9HRLj14RsCQJyuCkCFKnpz7B9s', pct: 10.794012646413076 },
+          { owner: 'DdGV4neesEuQUS5cX3x9A9An5i6BBJkPhHEN6PA3aRkf', pct: 7.168123853814549 },
+          { owner: 'GAbtMqB9P9Cz4vjXKLtfv4q74ctCTpGBDAjpWSFSJtGu', pct: 1.0957772808811095 },
+          { owner: 'HEz4TSDqvehgf8PJRJMPiZLL4CJ2CUxeJhJiRbSqQfbm', pct: 0.4431277363731988 },
+        ],
+      },
+    },
+  ],
+});
+
+test('链上 LP 供应量差额 = 已销毁比例（62.86%），不再是「未锁定也未销毁」', () => {
+  const r = mapRugCheckReport(realReport(), { liveLpSupply: 2_477_306_894_096 });
+  assert.ok(Math.abs((r.lp?.burnedPct ?? 0) - 62.86295376409249) < 1e-6, `实际 ${r.lp?.burnedPct}`);
+  assert.deepEqual(r.lp?.lpAudit, {
+    everMinted: 6_670_716_023_992,
+    live: 2_477_306_894_096,
+    burned: 4_193_409_129_896,
+  });
+  assert.equal(r.lp?.locked, false, '62.86% 不到 95%，不构成「整体已锁定」');
+  assert.equal(r.lp?.burned, undefined, '没到 95% 就不整体判成已销毁');
+  assert.equal(r.lp?.lpMint, LIVE_MINT, 'LP mint 要透出来，用户才能自己去链上核对');
+  // 集中度必须按**流通量**算：最大持有者占全量 12.36%，占流通量则是 33.3%
+  assert.equal(r.lp?.circulatingHolderCount, 5);
+  assert.ok(
+    Math.abs((r.lp?.topCirculatingHolderPct ?? 0) - 33.29) < 0.5,
+    `最大持有者占流通量应约 33.3%，实际 ${r.lp?.topCirculatingHolderPct}`,
+  );
+});
+
+test('销毁比例 ≥95% → 判为「已销毁」（比「已锁定」更硬）', () => {
+  const r = mapRugCheckReport(
+    {
+      markets: [
+        {
+          pubkey: 'Pool9999999999999999999999999999999999999999',
+          marketType: 'pump_fun_amm',
+          mintLP: 'LPMintBurned111111111111111111111111111111',
+          lp: { lpLockedPct: 100, lpLocked: 1000, lpUnlocked: 0, lpTotalSupply: 1000, holders: [] },
+        },
+      ],
+    },
+    { liveLpSupply: 0 },
+  );
+  assert.equal(r.lp?.burned, true);
+  assert.equal(r.lp?.locked, false);
+  assert.equal(r.lp?.burnedPct, 100);
+});
+
+test('拿不到链上供应量时不得声称已销毁（只留 RugCheck 口径）', () => {
+  const r = mapRugCheckReport(realReport());
+  assert.equal(r.lp?.burnedPct, undefined);
+  assert.equal(r.lp?.lpAudit, undefined);
+  assert.equal(r.lp?.topCirculatingHolderPct, undefined, '没有流通量分母就不得算集中度');
+  assert.equal(r.lp?.lockedPct, 62.86295376409249, 'RugCheck 的原始比例仍然保留');
+});
+
+test('creator 持有流通 LP 的比例要单独算出来', () => {
+  const r = mapRugCheckReport(
+    {
+      markets: [
+        {
+          pubkey: 'PoolAAAA000000000000000000000000000000000000',
+          marketType: 'pump_fun_amm',
+          mintLP: 'LPMintCreator11111111111111111111111111111',
+          lp: {
+            lpLockedPct: 50,
+            lpLocked: 50,
+            lpUnlocked: 50,
+            lpTotalSupply: 100,
+            holders: [
+              { owner: 'CreatorWallet1111111111111111111111111111111', pct: 20 },
+              { owner: 'RandomWallet11111111111111111111111111111111', pct: 30 },
+            ],
+          },
+        },
+      ],
+      knownAccounts: {
+        CreatorWallet1111111111111111111111111111111: { name: 'Creator', type: 'CREATOR' },
+      },
+    },
+    { liveLpSupply: 50 },
+  );
+  assert.ok(
+    Math.abs((r.lp?.creatorLpPct ?? 0) - 40) < 1e-6,
+    `creator 占流通 LP 的 40%（20/50），实际 ${r.lp?.creatorLpPct}`,
+  );
+});

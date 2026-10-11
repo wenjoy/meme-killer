@@ -623,13 +623,19 @@ test('LP 已确认未锁定 → 报「未锁未销毁」，不能退化成「未
   assert.ok(f.detail.includes('Creator111'), '要点名那个地址');
 });
 
-test('LP 未锁定但分散在多个地址 → high 而不是「未知」', () => {
+test('只拿到比例、拿不到持有者明细 → 报「持有人无法核实」，而不是「未知」也不是「可以撤池」', () => {
+  // lockedPct 只是「不在流通中的比例」。没有持有者明细时无从判断剩下的在谁手里，
+  // 所以既不能下撤池结论（可能全是第三方/锁仓），也不能说成安全。
   const r = analyzeContract(
     input({
       contract: { mintAuthority: null, freezeAuthority: null, lp: { exists: true, locked: false, lockedPct: 0 } },
     }),
   );
-  assert.ok(r.findings.some((f) => f.title === 'LP 未锁定也未销毁' && f.severity === 'high'));
+  assert.ok(
+    !r.findings.some((f) => f.title === 'LP 锁定状态未知'),
+    '有 RugCheck 比例就不该退回「完全未知」',
+  );
+  assert.ok(r.findings.some((f) => f.title === '流通中的 LP 持有人无法核实' && f.severity === 'medium'));
 });
 
 test('LP 已锁定/已销毁必须是可达的积极信号（曾经永远走不到）', () => {
@@ -764,6 +770,7 @@ test('「LP 未锁定也未销毁」必须列出未锁占比与 LP 持有者，�
           burned: false,
           lockedPct: 62.9,
           unlockedPct: 37.1,
+          withdrawablePct: 37.1,
           lpHolders: [
             { owner: 'LockerAccount111111111111111111111111111111', pct: 62.9, label: 'Streamflow' },
             { owner: 'CreatorWallet1111111111111111111111111111111', pct: 37.1, label: 'Creator' },
@@ -784,9 +791,9 @@ test('「LP 未锁定也未销毁」必须列出未锁占比与 LP 持有者，�
       contract: { mintAuthority: null, freezeAuthority: null, lp: { exists: true, locked: false, lockedPct: 62.9 } },
     }),
   );
-  const g = noEvidence.findings.find((x) => x.title === 'LP 未锁定也未销毁')!;
+  const g = noEvidence.findings.find((x) => x.title === '流通中的 LP 持有人无法核实')!;
   assert.ok(!g.detail.includes('项目方随时'), '没有证据就不指名道姓');
-  assert.ok(g.detail.includes('不要默认是项目方'));
+  assert.ok(g.detail.includes('无法确认剩余流通部分在谁手里'));
 });
 
 test('未锁 LP 由锁仓程序托管 → 报「托管中」而不是「随时可撤池」', () => {
@@ -814,7 +821,7 @@ test('未锁 LP 由锁仓程序托管 → 报「托管中」而不是「随时�
     !vesting.findings.some((f) => f.title === 'LP 未锁定也未销毁'),
     '不能把锁仓合约持有的 LP 说成「未锁定也未销毁、可以撤走」',
   );
-  const f = vesting.findings.find((x) => x.title === 'LP 未销毁，未锁部分主要在锁仓程序里')!;
+  const f = vesting.findings.find((x) => x.title === '流通中的 LP 主要在锁仓程序里')!;
   assert.ok(f, '要给出「托管中」的中间结论');
   assert.equal(f.severity, 'medium');
   assert.ok(f.detail.includes('68.3%') && f.detail.includes('31.5%') && f.detail.includes('0.16%'));
@@ -832,4 +839,120 @@ test('未锁 LP 由锁仓程序托管 → 报「托管中」而不是「随时�
     }),
   );
   assert.ok(freeEnough.findings.some((f) => f.title === 'LP 未锁定也未销毁' && f.severity === 'high'));
+});
+
+test('用户给的 9raUVuze…pump：62.9% 是「已销毁」，流通部分分散在多地址', () => {
+  // 真实数字：历史铸造 6,670,716,023,992，链上供应 2,477,306,894,096，销毁 62.86%。
+  // 旧代码按 RugCheck 字段名读成「LP 未锁定也未销毁」，与事实相反。
+  const r = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: {
+          exists: true,
+          locked: false,
+          lockedPct: 62.86295376409249,
+          burnedPct: 62.86295376409249,
+          lpMint: '3HWyWwRPBrAn5T2fFdiWizQqE3ktQ48BTJkuj7jdkZQ2',
+          lpAudit: {
+            everMinted: 6_670_716_023_992,
+            live: 2_477_306_894_096,
+            burned: 4_193_409_129_896,
+          },
+          circulatingHolderCount: 20,
+          topCirculatingHolderPct: 33.29,
+          unlockedPct: 37.13704623590751,
+          withdrawablePct: 35.8,
+        },
+      },
+    }),
+  );
+  assert.ok(
+    !r.findings.some((f) => f.title === 'LP 未锁定也未销毁'),
+    '不能把已销毁 62.9% 说成「未锁定也未销毁」',
+  );
+  const burned = r.findings.find((f) => f.title.startsWith('LP 已销毁'))!;
+  assert.ok(burned, '要报出已销毁的部分');
+  assert.equal(burned.severity, 'good');
+  assert.ok(burned.detail.includes('62.9%'));
+  assert.ok(burned.detail.includes('4,193,409,129,896'), '要给出可复算的原始数字');
+  assert.ok(burned.detail.includes('3HWyWwRPBrAn5T2fFdiWizQqE3ktQ48BTJkuj7jdkZQ2'), '要给出 LP mint');
+  const spread = r.findings.find((f) => f.title === '流通中的 LP 分散在多个地址')!;
+  assert.ok(spread, '流通部分要单独说明，而不是当成撤池风险');
+  assert.equal(spread.severity, 'low');
+  assert.ok(spread.detail.includes('20'));
+  assert.ok(spread.detail.includes('33.3%'));
+});
+
+test('部分销毁 + 项目方持有流通 LP → 才是真正的撤池风险（high）', () => {
+  const r = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: {
+          exists: true,
+          locked: false,
+          lockedPct: 50,
+          burnedPct: 50,
+          lpAudit: { everMinted: 1000, live: 500, burned: 500 },
+          creatorLpPct: 60,
+          circulatingHolderCount: 1,
+          topCirculatingHolderPct: 60,
+          lpHolders: [
+            { owner: 'CreatorWallet1111111111111111111111111111111', pct: 30, label: 'Creator' },
+          ],
+        },
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '项目方持有流通中的 LP')!;
+  assert.ok(f, 'creator 持有流通 LP 必须报 high');
+  assert.equal(f.severity, 'high');
+  assert.ok(f.detail.includes('60.0%'));
+  assert.ok(!r.findings.some((x) => x.title === '流通中的 LP 分散在多个地址'));
+});
+
+test('整体已销毁（100%）→ 直接报「LP 已销毁」，并附链上核对数字', () => {
+  const r = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: {
+          exists: true,
+          locked: false,
+          burned: true,
+          burnedPct: 100,
+          lockedPct: 100,
+          lpMint: '8HXSYFQhP2oJPZYLv8EC4YLu6nGn8EKAFETwWG4m2eVD',
+          lpAudit: { everMinted: 4_193_388_354_147, live: 0, burned: 4_193_388_354_147 },
+        },
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === 'LP 已销毁')!;
+  assert.ok(f);
+  assert.equal(f.severity, 'good');
+  assert.ok(f.detail.includes('4,193,388,354,147'));
+  assert.ok(!r.findings.some((x) => x.title === 'LP 已锁定/不可撤'));
+});
+
+test('有销毁比例但没有持有者明细 → 只报「持有人无法核实」，不编风险也不当安全', () => {
+  const r = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: { exists: true, locked: false, lockedPct: 62.9, lpMint: 'LPMintUnknown1111111111111111111111111111' },
+      },
+    }),
+  );
+  assert.ok(!r.findings.some((f) => f.title === 'LP 未锁定也未销毁'), '没有持有者证据就不下风险结论');
+  assert.ok(!r.findings.some((f) => f.title.includes('已锁定')), '也不能当成安全');
+  const f = r.findings.find((x) => x.title === '流通中的 LP 持有人无法核实')!;
+  assert.ok(f);
+  assert.equal(f.severity, 'medium');
+  assert.ok(f.detail.includes('62.9%') && f.detail.includes('LPMintUnknown'));
 });

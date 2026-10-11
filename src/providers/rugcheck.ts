@@ -109,8 +109,26 @@ export interface RugCheckResult {
   origin: FieldOrigin;
 }
 
+/**
+ * 选主 AMM 市场：排除 bonding curve 市场后取深度最大的一个。
+ *
+ * 单独抽出来是因为「读链上 LP 供应量」也需要先知道主池的 LP mint，
+ * 两处必须用同一套规则，否则会拿到不同池的数字互相打架。
+ */
+function pickMainMarket(report: RugReport): RugMarket | undefined {
+  const markets = Array.isArray(report.markets) ? report.markets : [];
+  const depth = (m: RugMarket) =>
+    (m.lp?.baseUSD ?? 0) + (m.lp?.quoteUSD ?? 0) || (m.lp?.lpLockedUSD ?? 0);
+  return [...markets.filter((m) => m.marketType !== 'pump_fun')].sort(
+    (a, b) => depth(b) - depth(a),
+  )[0];
+}
+
 /** 纯映射：把 RugCheck 的响应变成归一化字段。与网络解耦，便于单测。 */
-export function mapRugCheckReport(report: RugReport): Omit<RugCheckResult, 'origin'> {
+export function mapRugCheckReport(
+  report: RugReport,
+  opts: { liveLpSupply?: number } = {},
+): Omit<RugCheckResult, 'origin'> {
   const warnings: string[] = [];
   const markets = Array.isArray(report.markets) ? report.markets : [];
   // ⚠️ 曲线市场要排除在 LP 判定之外，但它的金库地址仍然要收进来做持仓剔除
@@ -143,9 +161,7 @@ export function mapRugCheckReport(report: RugReport): Omit<RugCheckResult, 'orig
 
   // ── 主市场：成交深度最大的那个 AMM 池 ────────────────────────────
   // 与 DexScreener 的 pickMainPair 同思路：主池才代表真实可撤走的流动性。
-  const depth = (m: RugMarket) =>
-    (m.lp?.baseUSD ?? 0) + (m.lp?.quoteUSD ?? 0) || (m.lp?.lpLockedUSD ?? 0);
-  const main = [...ammMarkets].sort((a, b) => depth(b) - depth(a))[0];
+  const main = pickMainMarket(report);
   const lpInfo: ContractInfo['lp'] | undefined = main ? {} : undefined;
 
   // ⚠️ LP mint 缺失或为零地址 → 该市场的 LP 数据不可用，必须整体忽略。
@@ -262,6 +278,51 @@ export function mapRugCheckReport(report: RugReport): Omit<RugCheckResult, 'orig
       });
     }
 
+    // ── 已销毁 LP：用链上供应量差额判定，而不是靠 RugCheck 的字段名猜 ──
+    //
+    // RugCheck 的 `lpLockedPct` 名字叫「锁定」，但它实际是**不在流通中的部分**：
+    // `lpTotalSupply`（历史铸造总量）− `lpUnlocked`（当前流通量）。实测四个代币，
+    // 链上 LP mint 的真实供应量都等于 `lpUnlocked`，差额就是被销毁的量：
+    //   9iryaLJ…pump  铸造 4,193,388,354,147 → 供应 0        = 销毁 100%（pump.fun 迁移销毁）
+    //   9raUVuze…pump 铸造 6,670,716,023,992 → 供应 2,477,306,894,096 = 销毁 62.86%
+    // 所以「锁定 62.9%」的真实含义是「已销毁 62.9%」—— 原先按字面读成
+    // 「未锁定也未销毁」是错的。
+    const everMinted =
+      typeof lp.lpTotalSupply === 'number' && lp.lpTotalSupply > 0 ? lp.lpTotalSupply : undefined;
+    const live = opts.liveLpSupply;
+    if (everMinted !== undefined && live !== undefined && live >= 0 && live <= everMinted) {
+      const burned = everMinted - live;
+      const pct = (burned / everMinted) * 100;
+      lpInfo.burnedPct = pct;
+      lpInfo.lpAudit = { everMinted, live, burned };
+      if (pct >= LOCKED_PCT) {
+        // 供应量差额 ≥95% = 这个池的 LP 基本被销毁，比任何「锁定」都硬
+        lpInfo.burned = true;
+        lpInfo.locked = false;
+        lpInfo.lockedPct = 100;
+      }
+      // 流通部分的集中度：只算普通钱包（不含锁仓合约与销毁地址）。
+      // 分母刻意用**流通量**——判断「一个人能撤走多少池子」看的是流通份额。
+      const livePct = (live / everMinted) * 100;
+      if (livePct > 0) {
+        const liveWallets = holders.filter(
+          (h) => !lockerOf(h.owner!) && !BURN_ADDRESSES.has(h.owner!),
+        );
+        if (liveWallets.length > 0) {
+          lpInfo.circulatingHolderCount = liveWallets.length;
+          lpInfo.topCirculatingHolderPct = Math.min(
+            100,
+            ((liveWallets[0].pct ?? 0) / livePct) * 100,
+          );
+        }
+        const creatorPct = holders
+          .filter((h) => known[h.owner!]?.type === 'CREATOR')
+          .reduce((sum, h) => sum + (h.pct ?? 0), 0);
+        if (creatorPct > 0) lpInfo.creatorLpPct = Math.min(100, (creatorPct / livePct) * 100);
+      }
+    }
+    if (lpUsable && main?.mintLP) lpInfo.lpMint = main.mintLP;
+
     if (lpInfo.burned !== true) {
       if (lpInfo.locked === true) {
         const locker = holders
@@ -345,16 +406,61 @@ function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function fetchRugCheck(mint: string): Promise<RugCheckResult> {
+/**
+ * 先读主池 LP mint 的链上供应量，再交给纯映射。
+ *
+ * ⚠️ 读不到时要留下告警：没有这个数就无法区分「LP 已销毁」与「LP 仍在流通」，
+ * 报告只能说 RugCheck 口径的比例，不能声称已销毁。
+ */
+async function withLiveSupply(
+  report: RugReport,
+  readLpSupply?: (lpMint: string) => Promise<number | undefined>,
+): Promise<Omit<RugCheckResult, 'origin'>> {
+  const main = pickMainMarket(report);
+  const lpMint =
+    main?.mintLP && main.mintLP !== NULL_ADDRESS && main.lp ? main.mintLP : undefined;
+  let live: number | undefined;
+  if (lpMint && readLpSupply) {
+    try {
+      live = await readLpSupply(lpMint);
+    } catch {
+      live = undefined;
+    }
+  }
+  const mapped = mapRugCheckReport(report, { liveLpSupply: live });
+  if (lpMint && readLpSupply && live === undefined) {
+    return {
+      ...mapped,
+      warnings: [
+        `无法读取 LP mint ${lpMint} 的链上供应量，因此无法核对「LP 已销毁」的比例，` +
+          '本次只给出 RugCheck 口径的锁定/销毁比例。',
+        ...mapped.warnings,
+      ],
+    };
+  }
+  return mapped;
+}
+
+/**
+ * 拉取并映射 RugCheck 报告。
+ *
+ * `readLpSupply` 由调用方注入（helius 的 RPC 读），用来把「RugCheck 说锁定 x%」
+ * 变成链上可复核的「已销毁 y%」。注入而不是直接 import：保持这一层可单测、
+ * 不把 RPC 依赖焊死。
+ */
+export async function fetchRugCheck(
+  mint: string,
+  readLpSupply?: (lpMint: string) => Promise<number | undefined>,
+): Promise<RugCheckResult> {
   const full = await getJson(`${BASE}/${mint}/report`, REPORT_MAX_BYTES);
   if (full.ok) {
-    const mapped = mapRugCheckReport(full.json as RugReport);
+    const mapped = await withLiveSupply(full.json as RugReport, readLpSupply);
     return { ...mapped, origin: 'rugcheck' };
   }
 
   const summary = await getJson(`${BASE}/${mint}/report/summary`, SUMMARY_MAX_BYTES);
   if (summary.ok) {
-    const mapped = mapRugCheckReport(summary.json as RugReport);
+    const mapped = await withLiveSupply(summary.json as RugReport, readLpSupply);
     return {
       ...mapped,
       origin: 'rugcheck',
