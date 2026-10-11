@@ -6,6 +6,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { THRESHOLDS } from '@/core/constants';
 import type {
   CustodyMetric,
+  DiamondEvidence,
+  DiamondInfo,
   DimensionResult,
   Finding,
   HolderCurvePoint,
@@ -441,9 +443,11 @@ export function Report({
 
       <LargeSellsSection report={report} />
 
+      <DiamondSection report={report} />
+
       <Provenance report={report} />
 
-      {/* ── 五维详细发现 ─────────────────────────────────────── */}
+      {/* ── 各维度详细发现 ───────────────────────────────────── */}
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-ink-300">逐项体检明细</h2>
         <div className="grid gap-3 lg:grid-cols-2">
@@ -1235,6 +1239,151 @@ function AllHoldersSection({ report }: { report: ScanReport }) {
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+/**
+ * 钻石手明细。
+ *
+ * 「钻石手 3 个」单独出现时无法核对，所以逐行给出：地址、持有时长、买入次数与金额、
+ * 是否落在最早窗口内（决定这条证据有多强）、当前持仓占比。地址链到 Solscan。
+ *
+ * ⚠️ 这个区块刻意**不给**「所以可以买」这类结论 —— 它只描述筹码结构。
+ * 新发币天然没人卖过，把「拿得住」当利好会让评分偏向新币。
+ */
+function DiamondSection({ report }: { report: ScanReport }) {
+  const m = report.dimensions.diamond?.metrics;
+  const info = m as unknown as DiamondInfo | undefined;
+  const rows = Array.isArray(info?.evidence) ? (info.evidence as DiamondEvidence[]) : [];
+  if (!info || info.analyzedWallets === undefined) return null;
+
+  const coverageLow = (info.windowCoveragePct ?? 0) < THRESHOLDS.diamond.minWindowCoveragePct;
+  const KIND_LABEL: Record<string, string> = {
+    pool: '池',
+    burn: '销毁',
+    timelock: '锁仓',
+    custody: '托管',
+    dev: 'creator',
+    related: '关联',
+    sniper: '狙击',
+    retail: '散户',
+  };
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-ink-300">钻石手（持仓行为）</h2>
+        <span className="font-mono text-[10px] text-ink-500">
+          {info.diamondHands} / {info.analyzedWallets} 个可分析钱包 · 窗口覆盖 {num(info.windowCoveragePct)}%
+        </span>
+      </div>
+
+      {coverageLow && (
+        <div className="rounded-xl border border-warn/40 bg-warn/5 p-3 text-xs leading-relaxed text-ink-300">
+          ⚠️ 成交窗口只覆盖了 <span className="font-mono text-warn">{num(info.windowCoveragePct)}%</span> 的时间跨度
+          {info.gapDays !== undefined && <>（中间缺 <span className="font-mono">{info.gapDays}</span> 天）</>}
+          ，所以下面的**只是窗口内的观测值，几乎肯定低估**：缺口期间买入并一直持有的钱包不在样本里。
+          「没看到卖」≠「没卖过」。
+        </div>
+      )}
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat
+          label="钻石手"
+          value={`${info.diamondHands ?? '—'}`}
+          sub={`占可分析钱包 ${num(info.sharePct)}%`}
+        />
+        <Stat
+          label="中位持有时长"
+          value={info.medianHoldDays !== undefined ? `${num(info.medianHoldDays)} 天` : '—'}
+          sub={info.medianHoldDays !== undefined ? '首次买入至今' : '没有符合条件的钱包'}
+        />
+        <Stat
+          label="证据最强（最早窗口内）"
+          value={`${info.strongEvidenceCount ?? 0}`}
+          sub="覆盖时间最长的那批"
+        />
+        <Stat
+          label="有加仓行为"
+          value={`${info.addOnCount ?? 0}`}
+          sub={`买入 ≥ ${THRESHOLDS.diamond.addOnBuys} 次`}
+        />
+      </div>
+
+      {rows.length > 0 ? (
+        <div className="overflow-hidden rounded-xl border border-ink-700">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-ink-900/60 text-ink-400">
+              <tr>
+                <th className="px-2 py-2 font-medium">#</th>
+                <th className="px-3 py-2 font-medium">钱包</th>
+                <th className="px-3 py-2 text-right font-medium">持有时长</th>
+                <th className="px-3 py-2 text-right font-medium">买入次数</th>
+                <th className="px-3 py-2 text-right font-medium">买入金额</th>
+                <th className="px-3 py-2 font-medium">证据强度</th>
+                <th className="px-3 py-2 text-right font-medium">当前占比</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink-800">
+              {rows.map((h, i) => (
+                <tr key={h.address} className="bg-ink-950/40">
+                  <td className="px-2 py-2 font-mono text-ink-500">{i + 1}</td>
+                  <td className="px-3 py-2 font-mono">
+                    <a
+                      href={`https://solscan.io/account/${h.address}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-ink-200 underline decoration-ink-700 hover:text-safe"
+                      title={h.address}
+                    >
+                      {shortAddr(h.address)}
+                    </a>
+                    {h.kind && h.kind !== 'retail' && (
+                      <span className="ml-1.5 rounded bg-ink-800 px-1 py-0.5 text-[9px] text-warn">
+                        {KIND_LABEL[h.kind] ?? h.kind}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-200">{num(h.holdDays)} 天</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-300">
+                    {h.buys}
+                    {h.added && <span className="ml-1 text-[9px] text-safe">加仓</span>}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-300">{num(h.buySol)} SOL</td>
+                  <td className="px-3 py-2 text-[10px]">
+                    {h.inEarlyWindow ? (
+                      <span className="text-safe">最早窗口内</span>
+                    ) : (
+                      <span className="text-ink-500" title="首次买入落在最近窗口里：没卖只是因为刚买">
+                        窗口内新进
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-300">
+                    {h.holderPct !== undefined ? `${num(h.holderPct)}%` : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="rounded-xl border border-ink-700 bg-ink-900/40 p-3 text-xs text-ink-400">
+          在 {info.analyzedWallets} 个可分析钱包里，没有找到符合「只买未卖 + 仍持仓 + 持有 ≥{' '}
+          {THRESHOLDS.diamond.minHoldDays} 天」的地址。
+          {coverageLow && '（窗口覆盖不足，这个结论很可能是漏，而不是真的没有。）'}
+        </p>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-ink-400">
+        口径：只统计成交窗口里出现过的 {info.tradesAnalyzed} 笔成交（最近 100 笔 + 最早{' '}
+        {THRESHOLDS.liquidity.sniperWindowTrades} 笔，按交易去重，中间的历史没拉到）；已排除 creator / 关联钱包{' '}
+        {info.excludedCount} 个、高频机器人 {info.robotCount} 个；「仍持仓」用全量持有人枚举的余额交叉验证，
+        卖光的不算。
+        <span className="text-ink-300">本维度权重为 0，不参与总分</span> ——
+        它描述筹码在谁手里，不回答该不该买；新币天然没人卖过，拿得住不等于利好。
+      </p>
     </section>
   );
 }

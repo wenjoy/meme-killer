@@ -38,6 +38,14 @@ export const WEIGHTS: Record<string, number> = {
   holders: 0.2,
   developer: 0.15,
   social: 0.1,
+  /**
+   * 钻石手：**权重 0** —— 刻意不参与总分。
+   *
+   * 不是「不重要」，而是方向不能反：这个维度分数高＝拿得住（抛压小），
+   * 但新发币天然没人卖过，把「拿得住」当利好会让评分系统性偏向新币。
+   * 所以它只描述筹码结构，不参与风险分，也不否决。
+   */
+  diamond: 0,
 };
 
 // 维度中文名（UI / 报告共用，避免多处硬编码导致不一致）
@@ -47,9 +55,17 @@ export const DIMENSION_LABELS: Record<string, string> = {
   holders: '持币集中度',
   developer: '开发者历史',
   social: '社交热度',
+  diamond: '钻石手',
 };
 
-export const DIMENSION_ORDER = ['contract', 'liquidity', 'holders', 'developer', 'social'] as const;
+export const DIMENSION_ORDER = [
+  'contract',
+  'liquidity',
+  'holders',
+  'developer',
+  'social',
+  'diamond',
+] as const;
 
 // ── 风险等级映射 ────────────────────────────────────────────────────
 export const RISK_BANDS: RiskBand[] = [
@@ -83,6 +99,23 @@ export const THRESHOLDS = {
     overviewDetailTtlMs: 10 * 60_000,
     /** 累计集中度曲线取这些名次 */
     overviewCurvePoints: [10, 50, 100, 500, 1000, 5000, 10_000],
+  },
+  diamond: {
+    /** 持有多少天以上才算「拿得住」。低于这个数不能叫钻石手 —— 刚买的人当然没卖 */
+    minHoldDays: 7,
+    /** 买入笔数 ≥ 此值算「还在加仓」（不是一把梭） */
+    addOnBuys: 2,
+    /** 买卖交替总笔数 ≥ 此值判定为机器人/做市，排除出统计 */
+    robotTrades: 12,
+    /** 钻石手占比 ≥ 此值才给一条「筹码在长期持有者手里」的描述（仍不参与评分） */
+    strongSharePct: 30,
+    /** 证据表最多列几行 */
+    maxEvidenceRows: 20,
+    /**
+     * 成交窗口覆盖率低于此值时必须给结论打折：
+     * 窗口覆盖不全时「没看到卖」说明不了什么（可能就是漏了）。
+     */
+    minWindowCoveragePct: 50,
   },
   liquidity: {
     /**

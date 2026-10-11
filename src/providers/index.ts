@@ -18,6 +18,7 @@ import type {
   DeveloperInfo,
   FieldOrigin,
   HolderOverviewLazy,
+  HolderRow,
   LiquidityInfo,
   RawHolder,
   ScanInput,
@@ -71,6 +72,8 @@ export function mergeInputs(parts: {
   launchWallet?: string;
   /** 全量持有人枚举结果（扫描时按阈值自动拉；没拉就没有） */
   holderEnumeration?: HolderEnumeration;
+  /** 本次扫描的参考时间（秒）—— 持仓时长等计算统一用它，避免同一份报告里出现两个「现在」 */
+  nowSec: number;
   /** 没自动加载全量的原因 */
   holdersOverviewLazy?: HolderOverviewLazy;
   /** RugCheck 口径的持有人总数，用于总览的口径对照 */
@@ -88,6 +91,7 @@ export function mergeInputs(parts: {
     creator,
     launchWallet,
     holderEnumeration,
+    nowSec,
     holdersOverviewLazy,
     reportedHolders,
   } = parts;
@@ -189,6 +193,65 @@ export function mergeInputs(parts: {
     );
   }
 
+  // ── 钻石手：逐地址成交 + 全量持仓 ────────────────────────────────
+  // 必须放在池地址推导之后：池/金库的成交不是「人的行为」，混进去会污染比例。
+  let diamond: ScanInput['diamond'];
+  if (activity.trades && activity.trades.length > 0) {
+    // 地址 → 当前余额（UI 单位）。用**全量枚举**（含零余额账户）：
+    // 「买了但已经卖光」的钱包余额是 0，只有全量枚举才看得到它们。
+    let holderBalances: Map<string, number> | undefined;
+    if (holderEnumeration && holderEnumeration.accounts.length > 0) {
+      const dec = token.decimals ?? 0;
+      holderBalances = new Map<string, number>();
+      for (const a of holderEnumeration.accounts) {
+        holderBalances.set(a.owner, (holderBalances.get(a.owner) ?? 0) + Number(a.amount) / 10 ** dec);
+      }
+    }
+    const createdSec = activity.createdSec ?? onchain.token.createdAt;
+    const ageSec =
+      typeof createdSec === 'number' ? Math.max(0, nowSec - createdSec) : undefined;
+    // 窗口覆盖：最早窗口结束 → 最近窗口开始 之间的缺口有多大
+    const ascEnd = activity.earlyWindowEndSec;
+    const descStart = activity.recentWindowStartSec;
+    const gapSec =
+      ascEnd !== undefined && descStart !== undefined && descStart > ascEnd
+        ? descStart - ascEnd
+        : 0;
+    const coveredSec =
+      ageSec !== undefined && ageSec > 0 ? Math.max(0, ageSec - gapSec) / ageSec : 1;
+    diamond = {
+      trades: activity.trades,
+      nowSec,
+      ...(creator ? { creator } : {}),
+      ...(launchWallet ? { launchWallet } : {}),
+      relatedWallets: developer?.developer?.linkedWallets ?? [],
+      // 前 20 名（已带 isPool/isSniper 标记）用来标注证据行的分类与持仓占比
+      ...(holders.length > 0
+        ? {
+            topHolders: holders.map((h) => ({
+              address: h.address,
+              amount: h.amount,
+              pct: h.pct ?? 0,
+              kind: (h.isPool
+                ? 'pool'
+                : h.isBurn
+                  ? 'burn'
+                  : h.isSniper
+                    ? 'sniper'
+                    : 'retail') as HolderRow['kind'],
+              counted: !h.isPool && !h.isBurn,
+            })),
+          }
+        : {}),
+      ...(holderBalances ? { holderBalances } : {}),
+      ...(ascEnd !== undefined ? { earlyWindowEndSec: ascEnd } : {}),
+      ...(descStart !== undefined ? { recentWindowStartSec: descStart } : {}),
+      windowCoveragePct: Math.round(coveredSec * 1000) / 10,
+      gapDays: gapSec / 86_400,
+    };
+  }
+
+
   // ── 流动性：按可信度从低到高覆盖 ────────────────────────────────
   // RugCheck（LP/持有人/池深度）→ DexScreener（USD 行情）→
   // Helius 逐笔成交（SOL 口径，覆盖推算值）→ bonding curve 账户（阶段与真实 SOL）
@@ -256,6 +319,8 @@ export function mergeInputs(parts: {
     // 全量持有人总览（没加载时字段不存在 —— 未知不能写成 0）
     ...(holdersOverview ? { holdersOverview } : {}),
     ...(holdersOverviewLazy ? { holdersOverviewLazy } : {}),
+    // 钻石手：逐地址成交（没取到时字段不存在，同样是「未知」而不是「0 个」）
+    ...(diamond ? { diamond } : {}),
     // Helius 不提供社交数据，需要第三方服务；留空让维度标记为未采集
     social: null,
     meta: {
@@ -410,6 +475,7 @@ export async function collectAndScan(
     }
   }
 
+  const scanStartedSec = Math.floor(started / 1000);
   const input = mergeInputs({
     mint,
     onchain,
@@ -422,6 +488,7 @@ export async function collectAndScan(
     ...(creator ? { creator } : {}),
     ...(resolved.launchWallet ? { launchWallet: resolved.launchWallet } : {}),
     ...(holderEnumeration ? { holderEnumeration } : {}),
+    nowSec: scanStartedSec,
     ...(holdersOverviewLazy ? { holdersOverviewLazy } : {}),
     ...(reportedHolders !== undefined ? { reportedHolders } : {}),
   });

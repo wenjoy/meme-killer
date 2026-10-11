@@ -343,6 +343,8 @@ export interface ScanInput {
   holdersOverview?: HolderOverview;
   /** 本次没自动加载全量的原因（账户数超上限 / 枚举失败） */
   holdersOverviewLazy?: HolderOverviewLazy;
+  /** 钻石手维度的输入（逐地址成交）；没有数据时字段不存在 */
+  diamond?: DiamondInput;
   /** 数据来源与完整性元信息，UI 必须展示，避免把估算当事实 */
   meta?: ScanMeta;
 }
@@ -393,6 +395,8 @@ export interface DimensionResult {
     | HolderRow[]
     | HolderOverview
     | HolderOverviewLazy
+    | DiamondInfo
+    | DiamondEvidence[]
   >;
   error?: string;
 }
@@ -529,6 +533,79 @@ export interface HolderOverviewLazy {
   reason: string;
   /** RugCheck 口径的预估账户数（拿不到就没有） */
   estimatedAccounts?: number;
+}
+
+/**
+ * 一条「钻石手」证据：某个钱包买了之后没卖、且现在仍持仓。
+ *
+ * 逐行给出是为了能被核对 —— 「钻石手 12 个」这种数字单独出现时读者无法验证，
+ * 所以每行都带地址、买入次数、买入金额、持有时长，可以点到 Solscan 看。
+ */
+export interface DiamondEvidence {
+  address: string;
+  /** 窗口内买入笔数（不是全部历史，窗口有缺口） */
+  buys: number;
+  /** 窗口内累计买入 SOL */
+  buySol: number;
+  /** 首次买入至今的天数 */
+  holdDays: number;
+  firstBuyTs?: number;
+  /**
+   * 是否落在**最早**成交窗口内。
+   *
+   * ⚠️ 这是证据强度的分水岭：只有最早窗口里的钱包，「至今未卖」才覆盖了
+   * 最长的时间跨度；最近窗口里刚买入的钱包没卖是因为才刚买（说明不了任何事）。
+   */
+  inEarlyWindow: boolean;
+  /** 当前持仓占总供应量百分比（取自前 20 名表；不在其中就没有） */
+  holderPct?: number;
+  /** 是否多次买入（不是一把梭） */
+  added: boolean;
+  /** 前 20 名表里的分类（用于确认不是池/托管） */
+  kind?: string;
+}
+
+/** 钻石手维度的完整结果（metrics 里那块） */
+export interface DiamondInfo {
+  /** 可分析的钱包数（已排除 creator/关联/机器人） */
+  analyzedWallets: number;
+  diamondHands: number;
+  /** diamondHands / analyzedWallets */
+  sharePct: number;
+  /** 落在最早窗口内的个数（证据最强的那部分） */
+  strongEvidenceCount: number;
+  addOnCount: number;
+  medianHoldDays?: number;
+  evidence: DiamondEvidence[];
+  robotCount: number;
+  excludedCount: number;
+  /** 实际分析的成交笔数 */
+  tradesAnalyzed: number;
+  /** 成交窗口的时间覆盖率（窗口覆盖时长 / 代币年龄），低于阈值时结论要打折 */
+  windowCoveragePct: number;
+  /** 两个窗口之间的缺口天数（没拉到的历史） */
+  gapDays?: number;
+}
+
+/**
+ * 钻石手维度的输入。
+ *
+ * ⚠️ 与 `holdersOverview` 一样：没有数据时字段**不存在**，不是全 0 ——
+ * 全 0 会被渲染成「钻石手 0 个」，那是一个虚假的结论。
+ */
+export interface DiamondInput {
+  trades: { trader: string; side: 'buy' | 'sell'; sol: number; ts?: number }[];
+  nowSec: number;
+  creator?: string;
+  launchWallet?: string;
+  relatedWallets: string[];
+  topHolders?: HolderRow[];
+  /** 地址 → 当前余额（UI 单位），来自全量枚举；含零余额账户 */
+  holderBalances?: Map<string, number>;
+  earlyWindowEndSec?: number;
+  recentWindowStartSec?: number;
+  windowCoveragePct: number;
+  gapDays?: number;
 }
 
 export interface CustodyMetric {

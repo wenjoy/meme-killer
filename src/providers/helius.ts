@@ -701,6 +701,14 @@ interface TxActivity {
   mintedMints: Set<string>;
   firstSellTs?: number;
   uniqueTraders: Set<string>;
+  /**
+   * 每笔成交的「谁、买卖、多少、何时」。
+   *
+   * 这是钻石手（持仓行为）维度的唯一数据源：判断「买了不卖 / 拿多久 / 加仓几次」
+   * 必须看**逐地址**的行为，聚合后的买卖笔数不够用。
+   * 只记录金额 > 0 且方向明确的成交，避免把无法归因的交易算进某个人头上。
+   */
+  trades: { trader: string; side: 'buy' | 'sell'; sol: number; ts?: number }[];
 }
 
 /**
@@ -747,6 +755,7 @@ function classifyTx(
 
   const ts = tx.timestamp;
   if (trader) acc.uniqueTraders.add(trader);
+  if (trader && sol > 0) acc.trades.push({ trader, side, sol, ...(ts !== undefined ? { ts } : {}) });
   if (ts !== undefined) {
     if (acc.minTs === undefined || ts < acc.minTs) acc.minTs = ts;
     if (acc.maxTs === undefined || ts > acc.maxTs) acc.maxTs = ts;
@@ -914,6 +923,7 @@ function analyzeTxs(
     devBuys: 0,
     mintedMints: new Set(),
     uniqueTraders: new Set(),
+    trades: [],
   };
   for (const tx of txs) {
     if (tx.transactionError) continue; // 失败的交易不算成交
@@ -929,6 +939,12 @@ export interface MintActivityResult {
   poolCandidates: string[];
   creator?: string;
   createdSec?: number;
+  /** 逐地址成交明细（最近窗口 + 最早窗口合并去重后），供钻石手维度使用 */
+  trades?: TxActivity['trades'];
+  /** 最早窗口覆盖到的时间上界（秒）：超过它就没有「最早」数据了 */
+  earlyWindowEndSec?: number;
+  /** 最近窗口覆盖到的时间下界（秒）：早于它就没有「最近」数据了 */
+  recentWindowStartSec?: number;
   /**
    * 最早的若干笔成交的付款方（不含 creator）。
    *
@@ -1068,7 +1084,37 @@ export async function fetchMintActivity(
     warnings.push(`拉取成交明细失败：${msg(recentRes.reason)}`);
   }
 
-  return { liquidity, poolCandidates, creator, createdSec, earlyBuyers, origin };
+  // ── 逐地址成交：钻石手维度要用「一个人的完整行为」，不是聚合数字 ──────
+  // 两个窗口合并去重（同一签名只算一次），并如实带上窗口边界 ——
+  // 中间那段没拉到的历史必须在报告里说明，否则「没看到卖」会被读成「没卖过」。
+  const tradesBySig = new Map<string, TxActivity['trades'][number]>();
+  const collect = (txs: HeliusTx[] | undefined) => {
+    if (!txs) return;
+    const acc = analyzeTxs(txs, mint, undefined, decimals);
+    for (const t of acc.trades) tradesBySig.set(`${t.trader}:${t.side}:${t.ts}:${t.sol}`, t);
+  };
+  if (recentRes.status === 'fulfilled') collect(recentRes.value);
+  if (oldestRes.status === 'fulfilled') collect(oldestRes.value);
+  const trades = [...tradesBySig.values()];
+  // 窗口覆盖：最早那批只到 earlyWindowEndSec，最近那批只从 recentWindowStartSec 开始
+  const asc = oldestRes.status === 'fulfilled' ? oldestRes.value : undefined;
+  const ascEnd = asc && asc.length > 0 ? Math.max(...asc.map((t) => t.timestamp ?? 0)) : undefined;
+  const descStart =
+    recentRes.status === 'fulfilled' && recentRes.value.length > 0
+      ? Math.min(...recentRes.value.map((t) => t.timestamp ?? Number.MAX_SAFE_INTEGER))
+      : undefined;
+
+  return {
+    liquidity,
+    poolCandidates,
+    creator,
+    createdSec,
+    earlyBuyers,
+    origin,
+    ...(trades.length > 0 ? { trades } : {}),
+    ...(ascEnd ? { earlyWindowEndSec: ascEnd } : {}),
+    ...(descStart ? { recentWindowStartSec: descStart } : {}),
+  };
 }
 
 // ── 开发者履历 ──────────────────────────────────────────────────────

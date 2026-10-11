@@ -54,7 +54,7 @@ export default function Home() {
           </span>
           <div>
             <h1 className="text-lg font-bold text-ink-200">Meme Radar</h1>
-            <p className="text-xs text-ink-400">Pump.fun 买入风险体检 · 五维链上风控</p>
+            <p className="text-xs text-ink-400">Pump.fun 买入风险体检 · 六维链上风控</p>
           </div>
         </div>
       </header>
@@ -148,7 +148,7 @@ export default function Home() {
               <li>
                 3. 先看有没有<span className="text-danger">硬否决</span>——有就直接放弃
               </li>
-              <li>4. 再看五维明细与仓位建议，注意标注「未采集」的维度</li>
+              <li>4. 再看各维度明细与仓位建议，注意标注「未采集」的维度</li>
             </ol>
           </div>
           <div className="rounded-xl border border-ink-700 bg-ink-900/40 p-4">
