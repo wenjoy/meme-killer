@@ -708,7 +708,32 @@ interface TxActivity {
    * 必须看**逐地址**的行为，聚合后的买卖笔数不够用。
    * 只记录金额 > 0 且方向明确的成交，避免把无法归因的交易算进某个人头上。
    */
-  trades: { trader: string; side: 'buy' | 'sell'; sol: number; ts?: number }[];
+  trades: TradeRecord[];
+}
+
+/**
+ * 一笔可归因到某个地址的成交。
+ *
+ * `tokenAmount` 是**买方/卖方本人**的代币净变化，不是整笔交易的转账总额 ——
+ * 抛压分布要用 `sol / tokenAmount` 反推每笔成交的单价（成本价），
+ * 用错数量会把成本算错成另一个数量级。
+ */
+export interface TradeRecord {
+  trader: string;
+  side: 'buy' | 'sell';
+  sol: number;
+  /** 该 trader 的代币净变化量（正数） */
+  tokenAmount: number;
+  ts?: number;
+  /**
+   * 该笔是否为**铸造/创建**交易。
+   *
+   * ⚠️ 这类交易绝不能用来算成本价：实测 pump.fun 的 CREATE 交易把 10 亿枚铸给
+   * bonding curve、再转 35.7 万枚给创建者，而创建者只付了 0.037 SOL 手续费 ——
+   * 用它算成本会得到 1e-7 SOL/枚 的假成本，进而报出「浮盈 +54771%」这种数字。
+   * 免费拿到的筹码没有买入价，只能标成「无成本/铸造成本」。
+   */
+  mintLike?: true;
 }
 
 /**
@@ -755,7 +780,28 @@ function classifyTx(
 
   const ts = tx.timestamp;
   if (trader) acc.uniqueTraders.add(trader);
-  if (trader && sol > 0) acc.trades.push({ trader, side, sol, ...(ts !== undefined ? { ts } : {}) });
+
+  // ⚠️ 代币数量必须取**这个 trader 本人**的净变化。
+  // `events.swap.tokenOutputs` 是整个交易层的，含中转账户；
+  // 实测只有 ~8% 的成交带 events.swap，所以主路径用 tokenTransfers 按 userAccount 归因。
+  let tokenNet = 0;
+  for (const tt of tx.tokenTransfers ?? []) {
+    if (tt.mint !== mint) continue;
+    if (tt.toUserAccount === trader) tokenNet += tt.tokenAmount ?? 0;
+    if (tt.fromUserAccount === trader) tokenNet -= tt.tokenAmount ?? 0;
+  }
+  if (trader && sol > 0 && tokenNet !== 0) {
+    // 创建/铸造交易单独标记：它带来的代币是「凭空得的」，没有买入成本
+    const mintLike = tx.type === 'CREATE' || tx.type === 'TOKEN_MINT';
+    acc.trades.push({
+      trader,
+      side,
+      sol,
+      tokenAmount: Math.abs(tokenNet),
+      ...(ts !== undefined ? { ts } : {}),
+      ...(mintLike ? { mintLike: true as const } : {}),
+    });
+  }
   if (ts !== undefined) {
     if (acc.minTs === undefined || ts < acc.minTs) acc.minTs = ts;
     if (acc.maxTs === undefined || ts > acc.maxTs) acc.maxTs = ts;

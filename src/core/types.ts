@@ -345,6 +345,8 @@ export interface ScanInput {
   holdersOverviewLazy?: HolderOverviewLazy;
   /** 钻石手维度的输入（逐地址成交）；没有数据时字段不存在 */
   diamond?: DiamondInput;
+  /** 抛压分布的输入（带代币数量的逐笔成交）；没有数据时字段不存在 */
+  sellPressure?: SellPressureInput;
   /** 数据来源与完整性元信息，UI 必须展示，避免把估算当事实 */
   meta?: ScanMeta;
 }
@@ -397,6 +399,9 @@ export interface DimensionResult {
     | HolderOverviewLazy
     | DiamondInfo
     | DiamondEvidence[]
+    | SellPressureInfo
+    | SellPressureBucket[]
+    | SellPressureWallet[]
   >;
   error?: string;
 }
@@ -593,6 +598,34 @@ export interface DiamondInfo {
  * ⚠️ 与 `holdersOverview` 一样：没有数据时字段**不存在**，不是全 0 ——
  * 全 0 会被渲染成「钻石手 0 个」，那是一个虚假的结论。
  */
+/**
+ * 抛压分布的输入。
+ *
+ * 与 `DiamondInput` 分开而不是复用：钻石手只需要「谁买了没卖」，
+ * 抛压还需要**每笔成交的代币数量**才能反推单价。混在一起会让钻石手
+ * 因为缺少数量字段而拿不到数据。
+ */
+export interface SellPressureInput {
+  /** 带代币数量的逐笔成交（配对失败的已在 provider 层丢弃） */
+  trades: {
+    trader: string;
+    side: 'buy' | 'sell';
+    sol: number;
+    tokenAmount: number;
+    ts?: number;
+    /** 铸造/创建交易：不算买入成本（免费获得的筹码没有买入价） */
+    mintLike?: true;
+  }[];
+  /** 窗口内全部成交笔数（含配对失败的），用来算配对率 */
+  windowTrades: number;
+  nowSec: number;
+  /** 流通盘对应的代币数量（UI 单位），用于把未卖量换算成占流通盘比例 */
+  circulatingTokens: number;
+  holderBalances?: Map<string, number>;
+  /** 地址 → 分类（来自前 20 名表），用于标注买家类型 */
+  kinds?: Map<string, string>;
+}
+
 export interface DiamondInput {
   trades: { trader: string; side: 'buy' | 'sell'; sol: number; ts?: number }[];
   nowSec: number;
@@ -606,6 +639,96 @@ export interface DiamondInput {
   recentWindowStartSec?: number;
   windowCoveragePct: number;
   gapDays?: number;
+}
+
+/**
+ * 抛压分布的一个价位区间。
+ *
+ * 「抛压」的定义刻意不是「谁赚了」而是「**还没卖的筹码值多少钱、在什么价位**」：
+ * 已经卖光的钱包不管赚多少都不再构成抛压，所以按**剩余持仓**折算。
+ */
+export interface SellPressureBucket {
+  label: string;
+  /** 盈亏下限/上限（相对现价的百分比，正数＝浮盈） */
+  minPnlPct?: number;
+  maxPnlPct?: number;
+  /** 该区间内还有多少代币没卖（UI 单位） */
+  unsoldTokens: number;
+  /** 占流通盘百分比 */
+  pctOfCirculating: number;
+  /** 该区间涉及的钱包数 */
+  wallets: number;
+  /** 这些钱包当初买入共花了多少 SOL */
+  costSol: number;
+}
+
+/**
+ * 单个钱包的抛压画像（逐行证据，可点到 Solscan 核对）。
+ */
+export interface SellPressureWallet {
+  address: string;
+  /** 窗口内加权平均成本（SOL/枚） */
+  avgCostSol: number;
+  /** 相对隐含现价的盈亏百分比（正数＝浮盈） */
+  pnlPct: number;
+  /** 窗口内买入总量（代币） */
+  boughtTokens: number;
+  /** 窗口内已卖出量（代币） */
+  soldTokens: number;
+  /** 已卖出比例 */
+  soldPct: number;
+  /**
+   * 未卖出的代币量。
+   *
+   * ⚠️ 这是**窗口内**的估算：窗口没覆盖的卖出看不到，所以它可能高估剩余量。
+   * 与全量枚举的当前余额不一致时会以余额为准并标注。
+   */
+  unsoldTokens: number;
+  /** 当前实际余额（全量枚举；拿不到就没有） */
+  currentBalance?: number;
+  costSol: number;
+  lastTs?: number;
+  kind?: string;
+}
+
+/** 抛压分布总览 */
+export interface SellPressureInfo {
+  /** 隐含现价（SOL/枚），从窗口内最近一笔成交反推 */
+  priceSol?: number;
+  /**
+   * 可分析的钱包数（窗口内能同时配对出 SOL 与代币数量的）。
+   *
+   * ⚠️ 必须与「有多少钱包持有该币」区分开：配对不上的成交（fee payer 代币净变化为 0）
+   * 根本进不来，所以这只是全量持仓者的一小部分。
+   */
+  walletsAnalyzed: number;
+  /** 配对成功 / 窗口内全部成交 —— 直接体现数据完整度 */
+  attributionPct: number;
+  /** 未卖筹码合计（代币） */
+  totalUnsoldTokens: number;
+  /** 未卖筹码按成本折算的 SOL 总额 */
+  totalCostSol: number;
+  /** 未卖筹码占流通盘百分比 */
+  unsoldPctOfCirculating: number;
+  buckets: SellPressureBucket[];
+  /**
+   * 现价不可靠时的替代视图：按成本价区间（而不是盈亏区间）分布未卖筹码。
+   * 只有 `priceSol` 缺失时才有值。
+   */
+  costBuckets?: SellPressureBucket[];
+  /** 现价缺失的原因说明 */
+  priceNote?: string;
+  /** 浮盈最大的若干钱包（按未卖量排序，只列还有筹码的） */
+  topHoldersAtProfit: SellPressureWallet[];
+  /** 已基本卖光的钱包数量（不再构成抛压，但要看得到） */
+  exitedWallets: number;
+  /** 通过铸造/创建免费拿到筹码的地址数（不计入成本统计，单列） */
+  mintedWallets: number;
+  /** 这些地址手上还没卖的免费筹码量 */
+  mintedUnsoldTokens: number;
+  /** 派发中的钱包数（卖了一半左右） */
+  distributingWallets: number;
+  windowNote: string;
 }
 
 export interface CustodyMetric {

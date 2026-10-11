@@ -15,6 +15,7 @@ import type {
   HolderOverviewLazy,
   HolderRow,
   LargeSellEvidence,
+  SellPressureInfo,
   ScanReport,
 } from '@/core/types';
 import { RadarChart, SEVERITY_STYLE, ScoreRing, TONE } from './visuals';
@@ -444,6 +445,8 @@ export function Report({
       <LargeSellsSection report={report} />
 
       <DiamondSection report={report} />
+
+      <SellPressureSection report={report} />
 
       <Provenance report={report} />
 
@@ -1383,6 +1386,169 @@ function DiamondSection({ report }: { report: ScanReport }) {
         卖光的不算。
         <span className="text-ink-300">本维度权重为 0，不参与总分</span> ——
         它描述筹码在谁手里，不回答该不该买；新币天然没人卖过，拿得住不等于利好。
+      </p>
+    </section>
+  );
+}
+
+/**
+ * 抛压分布。
+ *
+ * 回答的问题：**这些还没卖的筹码，在什么价位、还有多少、谁拿着**。
+ *
+ * 三条口径必须印在界面上，否则这张图会被读成「全部筹码的抛压」：
+ * - 只覆盖窗口内**能配对出成本**的那部分成交（实测某币 100 笔里只有 42 笔能配对）；
+ * - 已卖光（≥90%）的钱包不计入抛压 —— 已经跑掉的筹码不会再来砸盘；
+ * - 卖了一半的按剩余部分折算，未卖量与实际余额不一致时取较小值（保守）。
+ */
+function SellPressureSection({ report }: { report: ScanReport }) {
+  const m = report.dimensions.sellPressure?.metrics;
+  const info = m as unknown as SellPressureInfo | undefined;
+  if (!info || info.walletsAnalyzed === undefined) return null;
+
+  const baseBuckets = info.priceSol !== undefined ? info.buckets : (info.costBuckets ?? []);
+  const maxShare = Math.max(0.0001, ...baseBuckets.map((b) => b.pctOfCirculating));
+  const byPnl = info.priceSol !== undefined;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-semibold text-ink-300">抛压分布（还没卖的筹码在什么价位）</h2>
+        <span className="font-mono text-[10px] text-ink-500">
+          {byPnl
+            ? `现价 ${info.priceSol!.toExponential(2)} SOL/枚（窗口内最近成交反推）`
+            : info.priceNote ?? '现价不可用'}
+        </span>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat
+          label="未卖筹码（可分析部分）"
+          value={`${num(info.unsoldPctOfCirculating)}%`}
+          sub={`流通盘占比 · ${num(info.totalUnsoldTokens)} 枚`}
+        />
+        <Stat
+          label="按成本折算"
+          value={`${num(info.totalCostSol)} SOL`}
+          sub="这些钱包当初投入的本金"
+        />
+        <Stat
+          label="可分析钱包"
+          value={`${info.walletsAnalyzed}`}
+          sub={`成交配对率 ${num(info.attributionPct)}%`}
+        />
+        <Stat
+          label="已出走 / 派发中"
+          value={`${info.exitedWallets} / ${info.distributingWallets}`}
+          sub="已卖光的不算抛压"
+        />
+      </div>
+
+      {info.attributionPct < 50 && (
+        <div className="rounded-xl border border-warn/40 bg-warn/5 p-3 text-xs leading-relaxed text-ink-300">
+          ⚠️ 窗口内只有 <span className="font-mono text-warn">{num(info.attributionPct)}%</span> 的成交能配对出成本
+          （其余交易的代币变动记在别的账户上，无法归因到买家）。
+          <span className="text-warn">下面的分布只覆盖一小部分筹码，不是全貌。</span>
+        </div>
+      )}
+
+      {baseBuckets.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-ink-700">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-ink-900/60 text-ink-400">
+              <tr>
+                <th className="px-3 py-2 font-medium">{byPnl ? '相对现价的盈亏区间' : '买入成本区间'}</th>
+                <th className="px-3 py-2 text-right font-medium">钱包数</th>
+                <th className="px-3 py-2 text-right font-medium">未卖筹码</th>
+                <th className="px-3 py-2 text-right font-medium">{byPnl ? '占流通盘' : '占可分析筹码'}</th>
+                <th className="px-3 py-2 font-medium">分布</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink-800">
+              {baseBuckets.map((b) => (
+                <tr key={b.label} className="bg-ink-950/40">
+                  <td className="px-3 py-2 text-ink-300">{b.label}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-200">{b.wallets}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-300">{num(b.unsoldTokens)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-200">{num(b.pctOfCirculating)}%</td>
+                  <td className="px-3 py-2">
+                    <div className="h-1.5 w-full max-w-32 overflow-hidden rounded bg-ink-800">
+                      <div
+                        className="h-full bg-warn"
+                        style={{ width: `${Math.min(100, (b.pctOfCirculating / maxShare) * 100).toFixed(1)}%` }}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {info.topHoldersAtProfit.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-ink-700">
+          <div className="border-b border-ink-800 bg-ink-900/60 px-3 py-2 text-[10px] text-ink-400">
+            浮盈且仍有筹码的钱包（未卖量从大到小）—— 这些是最有动机卖出的一批
+          </div>
+          <table className="w-full text-left text-xs">
+            <thead className="bg-ink-900/40 text-ink-400">
+              <tr>
+                <th className="px-2 py-2 font-medium">#</th>
+                <th className="px-3 py-2 font-medium">钱包</th>
+                <th className="px-3 py-2 text-right font-medium">成本</th>
+                <th className="px-3 py-2 text-right font-medium">盈亏</th>
+                <th className="px-3 py-2 text-right font-medium">未卖</th>
+                <th className="px-3 py-2 text-right font-medium">已卖</th>
+                <th className="px-3 py-2 font-medium">买入时间</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink-800">
+              {info.topHoldersAtProfit.map((w, i) => (
+                <tr key={w.address} className="bg-ink-950/40">
+                  <td className="px-2 py-2 font-mono text-ink-500">{i + 1}</td>
+                  <td className="px-3 py-2 font-mono">
+                    <a
+                      href={`https://solscan.io/account/${w.address}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-ink-200 underline decoration-ink-700 hover:text-safe"
+                      title={w.address}
+                    >
+                      {shortAddr(w.address)}
+                    </a>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-400">{w.avgCostSol.toExponential(2)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-safe">
+                    +{w.pnlPct >= 1000 ? w.pnlPct.toFixed(0) : w.pnlPct.toFixed(1)}%
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-200">{num(w.unsoldTokens)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-ink-400">{num(w.soldPct)}%</td>
+                  <td className="px-3 py-2 text-[10px] text-ink-500">
+                    {w.lastTs ? new Date(w.lastTs * 1000).toISOString().slice(0, 10) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {info.mintedWallets > 0 && (
+        <div className="rounded-xl border border-ink-700 bg-ink-900/40 p-3 text-xs leading-relaxed text-ink-400">
+          另有 <span className="font-mono text-ink-200">{info.mintedWallets}</span> 个地址的筹码是
+          <span className="text-ink-300">创建/铸造获得的</span>（约 {num(info.mintedUnsoldTokens)} 枚，只付了网络手续费），
+          <span className="text-ink-300">没有买入价</span>，因此不计入上面的盈亏分桶 ——
+          把手续费当成本会算出「浮盈几十万%」这种假数字。
+          这类筹码在任何价位卖出都是纯利润。
+        </div>
+      )}
+
+      <p className="text-[11px] leading-relaxed text-ink-400">
+        口径：{info.windowNote}
+        盈亏用「窗口内最近一笔成交反推」的隐含现价计算，<span className="text-ink-300">不是行情接口的价</span>；
+        超过 {Math.round(THRESHOLDS.sellPressure.maxPriceAgeSec / 3600)} 小时的陈旧价格会停用这一栏。
+        本维度权重为 0，不参与总分。
       </p>
     </section>
   );

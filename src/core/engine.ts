@@ -19,6 +19,7 @@ import { analyzeHolders } from './analyzers/holders';
 import { analyzeDeveloper } from './analyzers/developer';
 import { analyzeSocial } from './analyzers/social';
 import { analyzeDiamond } from './analyzers/diamond';
+import { analyzeSellPressure } from './analyzers/sellPressure';
 import type { DimensionResult, Finding, ScanInput, ScanReport } from './types';
 
 export const ANALYZERS: Record<string, (data: ScanInput) => DimensionResult> = {
@@ -28,6 +29,7 @@ export const ANALYZERS: Record<string, (data: ScanInput) => DimensionResult> = {
   developer: analyzeDeveloper,
   social: analyzeSocial,
   diamond: analyzeDiamond,
+  sellPressure: analyzeSellPressure,
 };
 
 /** 把发现项按严重度排序，供报告与 UI 使用 */

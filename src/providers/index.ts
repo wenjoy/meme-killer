@@ -195,18 +195,20 @@ export function mergeInputs(parts: {
 
   // ── 钻石手：逐地址成交 + 全量持仓 ────────────────────────────────
   // 必须放在池地址推导之后：池/金库的成交不是「人的行为」，混进去会污染比例。
+  // 地址 → 当前余额（UI 单位）。用**全量枚举**（含零余额账户）：
+  // 「买了但已经卖光」的钱包余额是 0，只有全量枚举才看得到它们。
+  // 钻石手与抛压分布共用同一份，避免重复构建。
+  let holderBalances: Map<string, number> | undefined;
+  if (holderEnumeration && holderEnumeration.accounts.length > 0) {
+    const dec = token.decimals ?? 0;
+    holderBalances = new Map<string, number>();
+    for (const a of holderEnumeration.accounts) {
+      holderBalances.set(a.owner, (holderBalances.get(a.owner) ?? 0) + Number(a.amount) / 10 ** dec);
+    }
+  }
+
   let diamond: ScanInput['diamond'];
   if (activity.trades && activity.trades.length > 0) {
-    // 地址 → 当前余额（UI 单位）。用**全量枚举**（含零余额账户）：
-    // 「买了但已经卖光」的钱包余额是 0，只有全量枚举才看得到它们。
-    let holderBalances: Map<string, number> | undefined;
-    if (holderEnumeration && holderEnumeration.accounts.length > 0) {
-      const dec = token.decimals ?? 0;
-      holderBalances = new Map<string, number>();
-      for (const a of holderEnumeration.accounts) {
-        holderBalances.set(a.owner, (holderBalances.get(a.owner) ?? 0) + Number(a.amount) / 10 ** dec);
-      }
-    }
     const createdSec = activity.createdSec ?? onchain.token.createdAt;
     const ageSec =
       typeof createdSec === 'number' ? Math.max(0, nowSec - createdSec) : undefined;
@@ -248,6 +250,38 @@ export function mergeInputs(parts: {
       ...(descStart !== undefined ? { recentWindowStartSec: descStart } : {}),
       windowCoveragePct: Math.round(coveredSec * 1000) / 10,
       gapDays: gapSec / 86_400,
+    };
+  }
+
+
+  // ── 抛压分布：需要每笔成交的代币数量才能反推成本价 ────────────────
+  let sellPressure: ScanInput['sellPressure'];
+  if (activity.trades && activity.trades.length > 0) {
+    const pairable = activity.trades.filter((t) => t.tokenAmount > 0);
+    // 流通盘的代币数量：总量 × 流通盘比例（来自全量枚举，没有就用 100%）
+    const supply = onchain.contract?.supply ?? token.supply ?? 0;
+    const circPct = holdersOverview?.circulatingPct ?? 100;
+    const kindMap = new Map<string, string>();
+    for (const h of holders) {
+      kindMap.set(
+        h.address,
+        h.isPool ? 'pool' : h.isBurn ? 'burn' : h.isSniper ? 'sniper' : 'retail',
+      );
+    }
+    sellPressure = {
+      trades: pairable.map((t) => ({
+        trader: t.trader,
+        side: t.side,
+        sol: t.sol,
+        tokenAmount: t.tokenAmount,
+        ...(t.ts !== undefined ? { ts: t.ts } : {}),
+        ...(t.mintLike ? { mintLike: true as const } : {}),
+      })),
+      windowTrades: activity.trades.length,
+      nowSec,
+      circulatingTokens: (supply * circPct) / 100,
+      ...(holderBalances ? { holderBalances } : {}),
+      ...(kindMap.size > 0 ? { kinds: kindMap } : {}),
     };
   }
 
@@ -321,6 +355,7 @@ export function mergeInputs(parts: {
     ...(holdersOverviewLazy ? { holdersOverviewLazy } : {}),
     // 钻石手：逐地址成交（没取到时字段不存在，同样是「未知」而不是「0 个」）
     ...(diamond ? { diamond } : {}),
+    ...(sellPressure ? { sellPressure } : {}),
     // Helius 不提供社交数据，需要第三方服务；留空让维度标记为未采集
     social: null,
     meta: {

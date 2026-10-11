@@ -46,6 +46,8 @@ export const WEIGHTS: Record<string, number> = {
    * 所以它只描述筹码结构，不参与风险分，也不否决。
    */
   diamond: 0,
+  /** 抛压分布同样**权重 0**：它回答「筹码会怎么出来」，不是「安不安全」 */
+  sellPressure: 0,
 };
 
 // 维度中文名（UI / 报告共用，避免多处硬编码导致不一致）
@@ -56,6 +58,7 @@ export const DIMENSION_LABELS: Record<string, string> = {
   developer: '开发者历史',
   social: '社交热度',
   diamond: '钻石手',
+  sellPressure: '抛压分布',
 };
 
 export const DIMENSION_ORDER = [
@@ -65,6 +68,7 @@ export const DIMENSION_ORDER = [
   'developer',
   'social',
   'diamond',
+  'sellPressure',
 ] as const;
 
 // ── 风险等级映射 ────────────────────────────────────────────────────
@@ -99,6 +103,35 @@ export const THRESHOLDS = {
     overviewDetailTtlMs: 10 * 60_000,
     /** 累计集中度曲线取这些名次 */
     overviewCurvePoints: [10, 50, 100, 500, 1000, 5000, 10_000],
+  },
+  sellPressure: {
+    /**
+     * 盈亏分桶（相对现价的百分比）。
+     * 分桶边界按「行为心理」定，不按等距：回本区（-10%~+10%）是最容易触发卖出的地方，
+     * 深度亏损区（< -50%）通常是死拿不动的，浮盈巨大区最可能获利了结。
+     */
+    pnlBuckets: [
+      // 每一档都显式写 min/max（可缺省用 ±Infinity）：联合类型里可选字段访问不到
+      { label: '浮盈 > 200%（随时获利了结）', min: 200, max: Number.POSITIVE_INFINITY },
+      { label: '浮盈 50% – 200%（有落袋动机）', min: 50, max: 200 },
+      { label: '浮盈 10% – 50%', min: 10, max: 50 },
+      { label: '回本区 -10% ~ +10%（最易触发卖出）', min: -10, max: 10 },
+      { label: '浮亏 10% – 50%（等回本）', min: -50, max: -10 },
+      { label: '浮亏 > 50%（通常死拿）', min: Number.NEGATIVE_INFINITY, max: -50 },
+    ],
+    /** 已卖出比例 ≥ 此值算「已出走」，不再计入抛压 */
+    exitedSoldPct: 90,
+    /** 已卖出比例在此区间算「派发中」 */
+    distributingSoldPct: 30,
+    /** 配对率低于此值时整个视图要标「样本不足」 */
+    minAttributionPct: 30,
+    /** 逐行证据最多列几行 */
+    maxWalletRows: 15,
+    /**
+     * 反推现价允许的最大时间差（秒）：窗口内最近一笔成交离「现在」太远时，
+     * 那个价格已经不能代表现价（实测该币最近成交距今几十小时）。
+     */
+    maxPriceAgeSec: 24 * 3600,
   },
   diamond: {
     /** 持有多少天以上才算「拿得住」。低于这个数不能叫钻石手 —— 刚买的人当然没卖 */
