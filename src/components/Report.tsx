@@ -410,18 +410,24 @@ export function Report({
             </div>
           </section>
 
-          <p className="rounded-lg border border-ink-700 bg-ink-900/40 px-3 py-2 text-[11px] leading-relaxed text-ink-400">
-            每个维度具体依据的数字与发现，见
-            <button
-              type="button"
-              onClick={() => switchTab(T.source.key)}
-              className="mx-1 text-accent underline decoration-dotted hover:text-accent/80"
-            >
-              「数据来源」tab 的逐项体检明细
-            </button>
-            —— 同一个数字只在一处显示，避免两处口径不一致。
-          </p>
 
+          {/* ── 以下是依据（分数在上、依据在下） ──────────────────── */}
+          <div className="flex items-center gap-3 pt-2">
+            <div className="h-px flex-1 bg-ink-700" />
+            <span className="text-[10px] tracking-wide text-ink-500">以下是每个维度的依据</span>
+            <div className="h-px flex-1 bg-ink-700" />
+          </div>
+
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-ink-300">逐项体检明细</h2>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {DIMENSION_ORDER.map((key) => {
+                const d = report.dimensions[key];
+                return d ? <DimensionCard key={key} d={d} /> : null;
+              })}
+            </div>
+          </section>
+                <Provenance report={report} />
               </>
             ),
           },
@@ -467,25 +473,6 @@ export function Report({
                   onRunDeep={onRunDeep}
                   deepPending={deepPending}
                 />
-              </>
-            ),
-          },
-          {
-            key: T.source.key,
-            label: T.source.label,
-            render: () => (
-              <>
-          {/* ── 各维度详细发现 ───────────────────────────────────── */}
-          <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-ink-300">逐项体检明细</h2>
-            <div className="grid gap-3 lg:grid-cols-2">
-              {DIMENSION_ORDER.map((key) => {
-                const d = report.dimensions[key];
-                return d ? <DimensionCard key={key} d={d} /> : null;
-              })}
-            </div>
-          </section>
-                <Provenance report={report} />
               </>
             ),
           },

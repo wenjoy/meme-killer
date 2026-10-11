@@ -9,7 +9,7 @@
  * 它们是常驻头部。一票判死的结论如果藏在默认不可见的页里，等于没显示。
  */
 
-export type TabKey = 'overview' | 'holders' | 'flow' | 'behavior' | 'source';
+export type TabKey = 'overview' | 'holders' | 'flow' | 'behavior';
 
 export interface ReportTabMeta {
   key: TabKey;
@@ -22,10 +22,19 @@ export const REPORT_TABS: ReportTabMeta[] = [
   {
     key: 'overview',
     label: '概览',
-    // ⚠️ 概览**只给各维度得分**，不给细节数字。
-    // 细节（Top10 占比、净流入、卖单额…）统一放在「逐项体检明细」里 ——
-    // 同一批数字出现在两个 tab 会被读成两套结论，改口径时也容易只改一处。
-    sections: ['雷达图', '各维度得分'],
+    /**
+     * 概览 = 雷达图 + 各维度得分 + 逐项体检明细 + 数据来源。
+     *
+     * 「数据来源」原本是独立 tab，但它只有约 3,800 字、没有任何交互，
+     * 单独占一个 tab 的代价（多一次点击、多一层导航）大于收益，故并入概览。
+     * 顺序是刻意的：**先分数（一眼看风险）→ 再明细 → 最后来源**。
+     *
+     * ⚠️ 仍然不允许**同一批数字出现在两个地方**：以前概览有一份手写的紧凑网格，
+     * 与「逐项体检明细」的卡片显示同样的 Top10 / 净流入 / 卖单额 ——
+     * 两份数字会各自漂移，改口径只改一处就会出现互相矛盾的值。
+     * 现在细节只在「逐项体检明细」里出现一次。
+     */
+    sections: ['雷达图', '各维度得分', '逐项体检明细', '数据来源与局限'],
   },
   {
     key: 'holders',
@@ -42,17 +51,7 @@ export const REPORT_TABS: ReportTabMeta[] = [
     label: '持仓行为',
     sections: ['钻石手', '抛压分布'],
   },
-  {
-    key: 'source',
-    label: '数据来源',
-    sections: ['逐项体检明细', '数据来源与局限'],
-  },
 ];
-
-/** 按 key 取 tab 元数据（渲染时用，避免数组下标与 key 混用） */
-export const TAB_META: Record<TabKey, ReportTabMeta> = Object.fromEntries(
-  REPORT_TABS.map((t) => [t.key, t]),
-) as Record<TabKey, ReportTabMeta>;
 
 /**
  * 常驻头部（不在任何 tab 里）。
@@ -64,6 +63,11 @@ export const ALWAYS_VISIBLE = ['结论卡（分数 / 风险等级 / 建议仓位
 
 /** 默认打开的 tab */
 export const DEFAULT_TAB: TabKey = 'overview';
+
+/** 按 key 取 tab 元数据（渲染时用，避免数组下标与 key 混用） */
+export const TAB_META: Record<TabKey, ReportTabMeta> = Object.fromEntries(
+  REPORT_TABS.map((t) => [t.key, t]),
+) as Record<TabKey, ReportTabMeta>;
 
 /** 某个区块名属于哪个 tab；找不到返回 undefined */
 export function tabForSection(section: string): TabKey | undefined {

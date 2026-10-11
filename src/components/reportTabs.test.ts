@@ -78,6 +78,8 @@ test('持仓相关的内容集中在「持仓」tab，行为相关集中在「�
   assert.equal(tabForSection('钻石手'), 'behavior');
   assert.equal(tabForSection('抛压分布'), 'behavior');
   assert.equal(tabForSection('大额卖单明细'), 'flow');
+  // 「数据来源」并入概览后，明细与来源归概览
+  assert.equal(tabForSection('数据来源与局限'), 'overview');
 });
 
 test('未知区块返回 undefined 而不是瞎猜一个 tab', () => {
@@ -90,12 +92,9 @@ test('未知区块返回 undefined 而不是瞎猜一个 tab', () => {
  * 之类同时在两处出现。两份数字将来会各自漂移 —— 改了口径只改一处，
  * 用户会看到两个互相矛盾的值。所以概览只保留得分。
  */
-test('【防重复】细节数字只能出现在明细里，概览只给得分', () => {
+test('【防重复】细节数字只出现一次：概览里先给得分，明细紧随其后', () => {
   const overview = REPORT_TABS.find((t) => t.key === 'overview')!;
-  const detailTab = tabForSection('逐项体检明细');
-  assert.ok(detailTab, '明细必须有归属');
-
-  // 概览的区块清单里不能出现「速览」这种承载细节数字的区块
+  // 概览的区块清单里不能出现「速览」这种承载细节数字的冗余区块
   for (const s of overview.sections) {
     assert.ok(
       !s.includes('速览'),
@@ -104,9 +103,24 @@ test('【防重复】细节数字只能出现在明细里，概览只给得分',
   }
   assert.ok(
     overview.sections.some((s) => s.includes('得分')),
-    '概览应当只展示各维度得分',
+    '概览应当展示各维度得分',
   );
-  assert.notEqual(detailTab, 'overview', '明细不能放在概览里');
+  // 「数据来源」并入概览后，明细与来源也都在概览里
+  assert.equal(tabForSection('逐项体检明细'), 'overview');
+  assert.equal(tabForSection('数据来源与局限'), 'overview');
+  // 顺序要求：得分 必须排在 明细 之前（先看风险，再看依据）
+  const iScore = overview.sections.findIndex((s) => s.includes('得分'));
+  const iDetail = overview.sections.findIndex((s) => s.includes('逐项体检明细'));
+  assert.ok(iScore < iDetail, '得分应排在逐项明细之前 —— 先给结论再给依据');
+});
+
+test('【已合并】不存在单独的「数据来源」tab', () => {
+  assert.equal(
+    REPORT_TABS.some((t) => t.key === ('source' as never)),
+    false,
+    '「数据来源」已并入概览，不该再有独立 tab',
+  );
+  assert.equal(REPORT_TABS.length, 4, 'tab 数应为 4');
 });
 
 test('【防重复】每个区块全局只能出现一次（分 tab 时最容易复制而不是移动）', () => {
