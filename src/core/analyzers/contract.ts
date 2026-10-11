@@ -125,18 +125,51 @@ export function analyzeContract(data: ScanInput): DimensionResult {
   }
 
   // ── LP 锁定 ─────────────────────────────────────────────────────
+  //
+  // 三态，且只有**明确读到**才算数（来源：RugCheck 按链上 LP mint 余额推导）：
+  //   burned = true            → 已销毁，这是最硬的结论
+  //   locked = true            → 已锁定（可能带锁仓方与解锁时间）
+  //   locked/burned = false    → **已确认未锁也未销毁** —— 存在撤池风险
+  //   undefined                → 未知，不得据此判死，只能提示
+  //
+  // ⚠️ 这里曾经有一个结构性 bug：`locked/burned` 从来没有任何 provider 写过，
+  // 于是「LP 已销毁 / 已锁定」两条利好永远不出现，而每个有池的代币都固定吃一条
+  // high 风险。现在数据由 providers/rugcheck.ts 提供，未知仍然是未知。
   const lp = c.lp ?? {};
+  const lockPct = lp.lockedPct !== undefined ? `锁定/销毁比例 ${lp.lockedPct.toFixed(1)}%` : '';
   if (lp.exists === false) {
     add('medium', '尚未建立 LP', '仍在 bonding curve 阶段，没有真实流动性池。');
   } else if (lp.burned) {
-    add('good', 'LP 已销毁', '流动性凭证已发送至销毁地址，无法撤池。');
+    add('good', 'LP 已销毁', `流动性凭证已发送至销毁地址，无法撤池${lockPct ? `（${lockPct}）` : ''}。`);
   } else if (lp.locked) {
-    add('good', 'LP 已锁定', `锁定至 ${lp.unlockAt ?? '未知时间'}${lp.locker ? `（${lp.locker}）` : ''}。`);
+    // ⚠️ 不把「锁定」硬说成「由某锁仓程序托管」：RugCheck 只给比例，
+    // 拿不到锁仓方时可能是销毁、也可能是 AMM 自身托管，措辞必须留余地。
+    add(
+      'good',
+      'LP 已锁定/不可撤',
+      (lp.locker
+        ? `由 ${lp.locker} 持有`
+        : lp.unlockAt
+          ? '由锁仓程序持有'
+          : '锁定或销毁比例已达上限，未提供锁仓方') +
+        (lp.unlockAt ? `，锁定至 ${lp.unlockAt.slice(0, 10)}` : '') +
+        `${lockPct ? `（${lockPct}）` : ''}，无法撤池。`,
+    );
   } else if (lp.singleHolder) {
-    veto('LP 未锁未销毁', `LP 由单一热钱包 ${lp.holder ?? '未知'} 持有，项目方可随时撤池跑路。`);
-  } else if (lp.exists === true || lp.holder !== undefined) {
+    veto(
+      'LP 未锁未销毁',
+      `LP 由单一地址 ${lp.holder ?? '未知'} 持有${lockPct ? `（${lockPct}）` : ''}，` +
+        '该地址可随时撤走全部流动性跑路。',
+    );
+  } else if (lp.locked === false || lp.burned === false) {
+    add(
+      'high',
+      'LP 未锁定也未销毁',
+      `已核实 LP 既未锁定也未销毁${lockPct ? `（${lockPct}）` : ''}，项目方随时可以撤走流动性。`,
+    );
+  } else if (lp.exists === true) {
     // 确认存在 LP，但锁仓状态查不到 —— 这是风险，不是安全
-    add('high', 'LP 锁定状态未知', '已确认存在流动性池，但未能链上核实 LP 已锁或已销毁，存在撤池风险。');
+    add('high', 'LP 锁定状态未知', '已确认存在流动性池，但未能核实 LP 已锁或已销毁，存在撤池风险。');
   }
   // lp 完全为空：不在此处下结论，避免把「没数据」误判成「有风险」
 

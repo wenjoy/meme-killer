@@ -14,6 +14,7 @@ import { scan, sortFindings } from './engine.ts';
 import { analyzeHolders, classifyHolder } from './analyzers/holders.ts';
 import { analyzeLiquidity } from './analyzers/liquidity.ts';
 import { analyzeContract } from './analyzers/contract.ts';
+import { analyzeDeveloper } from './analyzers/developer.ts';
 import { analyzeSocial } from './analyzers/social.ts';
 import { bandFor, scoreFromFindings } from './constants.ts';
 import {
@@ -215,7 +216,7 @@ test('命中否决时综合分必须为满分，不能出现「37 分 + 否决�
   const r = scan(
     input({
       contract: { mintAuthority: 'x' },
-      liquidity: { graduated: true, realSolReserves: 80, buyVolumeSol: 100, sellVolumeSol: 80, buyCount: 900, sellCount: 600, lpLockedOrBurned: true },
+      liquidity: { graduated: true, buyVolumeSol: 100, sellVolumeSol: 80, buyCount: 900, sellCount: 600 },
       holders: Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}`, amount: 0, pct: 1.5 })),
       social: { mentions24h: 1500, suspectedBotRatio: 0.1, engagementRatio: 0.4, uniqueAuthors: 500 },
     }),
@@ -599,4 +600,153 @@ test('多签即使很大也算巨鲸（托管 ≠ 锁定）', () => {
   const f = r.findings.find((x) => x.title === '存在单一巨鲸');
   assert.ok(f, '多签持仓超过阈值时仍应报巨鲸，因为多签可随时签名转出');
   assert.ok(f.detail.includes('托管不等于锁定'));
+});
+
+// ── 9. 「死字段」回归：字段没人写 ≠ 字段是 false ─────────────────
+// 这一组测试锁的是同一类结构性 bug：schema 里声明了字段、分析器消费了它，
+// 但没有任何 provider 会写入。结果是分支永远走同一条、结论永远错。
+// 修法：要么接真实数据源把它填上，要么删掉字段与分支，绝不保留「看起来在检查」的死代码。
+test('LP 已确认未锁定 → 报「未锁未销毁」，不能退化成「未知」', () => {
+  const r = analyzeContract(
+    input({
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        // 实测形状：pump_fun_amm 池 lpLockedPct≈0，单一地址持有 100% LP
+        lp: { exists: true, locked: false, lockedPct: 0.0000041, singleHolder: true, holder: 'Creator111' },
+      },
+    }),
+  );
+  assert.equal(r.vetoed, true, '单一地址持有全部未锁 LP = 随时可撤池，必须否决');
+  const f = r.findings.find((x) => x.title === 'LP 未锁未销毁');
+  assert.ok(f, '必须报出「未锁未销毁」，而不是含糊的「未知」');
+  assert.ok(f.detail.includes('Creator111'), '要点名那个地址');
+});
+
+test('LP 未锁定但分散在多个地址 → high 而不是「未知」', () => {
+  const r = analyzeContract(
+    input({
+      contract: { mintAuthority: null, freezeAuthority: null, lp: { exists: true, locked: false, lockedPct: 0 } },
+    }),
+  );
+  assert.ok(r.findings.some((f) => f.title === 'LP 未锁定也未销毁' && f.severity === 'high'));
+});
+
+test('LP 已锁定/已销毁必须是可达的积极信号（曾经永远走不到）', () => {
+  const locked = analyzeContract(
+    input({ contract: { mintAuthority: null, freezeAuthority: null, lp: { exists: true, locked: true, lockedPct: 100, locker: 'Printr Stake Pool' } } }),
+  );
+  assert.ok(locked.findings.some((f) => f.title === 'LP 已锁定/不可撤' && f.severity === 'good'));
+  const burned = analyzeContract(
+    input({ contract: { mintAuthority: null, freezeAuthority: null, lp: { exists: true, burned: true, lockedPct: 100 } } }),
+  );
+  assert.ok(burned.findings.some((f) => f.title === 'LP 已销毁' && f.severity === 'good'));
+});
+
+test('LP 状态拿不到时仍然是「未知」，不能被当成安全', () => {
+  const r = analyzeContract(
+    input({ contract: { mintAuthority: null, freezeAuthority: null, lp: { exists: true } } }),
+  );
+  assert.ok(r.findings.some((f) => f.title === 'LP 锁定状态未知' && f.severity === 'high'));
+});
+
+test('金额只有 USD 口径时不得算净流入，也不得用它判刷量', () => {
+  const r = analyzeLiquidity(
+    input({
+      liquidity: { buyVolumeUsd: 24000, sellVolumeUsd: 23800, buyCount: 400, sellCount: 380 },
+    }),
+  );
+  assert.equal(r.metrics!.netInflowSol, undefined, 'USD 值不能当 SOL 净流入');
+  assert.ok(!r.findings.some((f) => f.title === '疑似刷量'), '没有 SOL 口径就不能判刷量');
+  assert.ok(r.findings.some((f) => f.title === '刷量无法判定'), '但必须说明为什么判定不了');
+  assert.ok(typeof r.metrics!.sellSharePct === 'number', '与单位无关的占比仍然可算');
+  assert.equal(r.metrics!.volumeUnit, 'USD');
+});
+
+test('金额有 SOL 口径时净流入与刷量判定照常生效', () => {
+  const r = analyzeLiquidity(
+    input({ liquidity: { buyVolumeSol: 50, sellVolumeSol: 49.9, buyCount: 400, sellCount: 380 } }),
+  );
+  assert.equal(r.metrics!.volumeUnit, 'SOL');
+  assert.ok(typeof r.metrics!.netInflowSol === 'number');
+  assert.ok(r.findings.some((f) => f.title === '疑似刷量'));
+});
+
+test('只有持有人数、没有任何成交深度 → 仍然标为「流动性数据缺失」且不计分', () => {
+  // 这一条防止「RugCheck 顺手带回来的 holderCount」把维度伪装成已评估
+  const r = analyzeLiquidity(input({ liquidity: { holderCount: 748 } }));
+  assert.equal(r.metrics!.available, 0);
+  assert.ok(r.findings.some((f) => f.title === '流动性数据缺失'));
+  assert.equal(r.score, 0);
+});
+
+test('curve 内真实 SOL 有值时才判深度，没值不造 0', () => {
+  const low = analyzeLiquidity(input({ liquidity: { graduated: false, realSolReserves: 0.8 } }));
+  assert.ok(low.findings.some((f) => f.title === 'curve 内真实 SOL 极低'));
+  assert.equal(low.metrics!.realSolReserves, 0.8);
+
+  const unknown = analyzeLiquidity(input({ liquidity: { graduated: false, buyCount: 10, sellCount: 5 } }));
+  assert.equal(unknown.metrics!.realSolReserves, undefined, '拿不到储备就不要写 0');
+});
+
+test('狙击占比未知时不下结论；同一事实只在持币维度扣一次分', () => {
+  const unknown = analyzeLiquidity(input({ liquidity: { graduated: true, buyVolumeSol: 10, sellVolumeSol: 5, buyCount: 40, sellCount: 30 } }));
+  assert.equal(unknown.metrics!.sniperHoldPct, undefined, '拿不到最早成交就是未知，不是 0');
+
+  const known = analyzeLiquidity(input({ liquidity: { graduated: true, buyVolumeSol: 10, sellVolumeSol: 5, buyCount: 40, sellCount: 30, sniperHoldPct: 38 } }));
+  assert.equal(known.metrics!.sniperHoldPct, 38);
+  assert.ok(!known.findings.some((f) => f.title.includes('狙击')), '流动性维度不再重复扣分');
+
+  const h = analyzeHolders(
+    input({
+      holders: [
+        { address: 'Sniper111111111111111111111111111111111111', amount: 0, pct: 30, isSniper: true },
+        ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 2 })),
+      ],
+    }),
+  );
+  assert.ok(h.findings.some((f) => f.title === '狙击钱包筹码偏多'), '持币维度负责出结论');
+  assert.ok(h.findings.find((f) => f.title === '狙击钱包筹码偏多')!.detail.includes('下限'));
+});
+
+test('尘埃级程序托管仓位不再单独提示（0.0% 的提示会淹没真信号）', () => {
+  const dust = analyzeHolders(
+    input({
+      holders: [
+        { address: 'Dust1111', amount: 0, pct: 0.0034, custody: { programId: 'SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf', kind: 'multisig', label: 'Squads 多签金库' } },
+        { address: 'Retail1111', amount: 0, pct: 5 },
+      ],
+    }),
+  );
+  assert.ok(!dust.findings.some((f) => f.title.includes('程序托管持仓')), '0.003% 不值得单独提示');
+  assert.ok(Math.abs((dust.metrics!.otherCustodyPct as number) - 0.0034) < 1e-9, '指标仍然如实记录');
+
+  const real = analyzeHolders(
+    input({
+      holders: [
+        { address: 'Big1111', amount: 0, pct: 30, custody: { programId: 'SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf', kind: 'multisig', label: 'Squads 多签金库' } },
+        ...Array.from({ length: 12 }, (_, i) => ({ address: `Retail${i}Addr`, amount: 0, pct: 1 })),
+      ],
+    }),
+  );
+  assert.ok(real.findings.some((f) => f.title.includes('程序托管持仓')), '真实体量的托管必须提示');
+});
+
+test('有历史发币但结局未核实 → 不得输出「历史记录干净」', () => {
+  const r = analyzeDeveloper(
+    input({ developer: { creator: 'Dev111', priorTokens: [{ mint: 'A' }, { mint: 'B' }] } }),
+  );
+  assert.ok(!r.findings.some((f) => f.title.includes('干净')), '没有任何数据支持「干净」这个结论');
+  assert.ok(r.findings.some((f) => f.title === '历史发币结局未核实'));
+  assert.equal(r.metrics!.priorRugCount, undefined, '历史 rug 数无从得知，就不能出现在指标里');
+});
+
+test('持有人数未知时不得报「持有人少且集中」', () => {
+  const holders = Array.from({ length: 12 }, (_, i) => ({ address: `H${i}`, amount: 0, pct: 6 }));
+  const unknown = analyzeHolders(input({ holders }));
+  assert.ok(!unknown.findings.some((f) => f.title === '持有人少且集中'));
+  assert.equal(unknown.metrics!.holderCount, undefined);
+
+  const known = analyzeHolders(input({ holders, liquidity: { holderCount: 30 } }));
+  assert.ok(known.findings.some((f) => f.title === '持有人少且集中'), 'RugCheck 给了持有人数后该判断必须生效');
 });

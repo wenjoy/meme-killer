@@ -45,7 +45,12 @@ export interface RawHolder {
   /** 是否为流动性池 / 金库（剔除项，最大误报源） */
   isPool?: boolean;
   isBurn?: boolean;
-  isTeamWallet?: boolean;
+  /**
+   * 是否为狙击仓位。
+   *
+   * 由「代币最早若干笔成交的买家」∩「当前前 20 大持仓」推算，
+   * 只在真的取到最早成交时才写入；取不到就是 undefined（未知），不是「没有狙击」。
+   */
   isSniper?: boolean;
   /** 辅助匹配用的标签，例如 "Raydium AMM Pool" */
   label?: string;
@@ -80,13 +85,30 @@ export interface ContractInfo {
   extensions?: string[];
   transferFeeBps?: number;
   isMutableMetadata?: boolean;
+  /**
+   * LP（流动性凭证）状态。
+   *
+   * 三个字段都是**三态**，且只有明确读到才算：
+   * - `true`  已确认锁定 / 已销毁
+   * - `false` 已确认**未**锁定 / **未**销毁（存在撤池风险）
+   * - `undefined` 未知 —— 不得据此判死，只能提示
+   *
+   * 数据来源：RugCheck 的 `markets[].lp`（链上 LP mint 余额推导）。
+   * 拿不到时保持 undefined，UI 必须显示「未知」而不是「安全」。
+   */
   lp?: {
     exists?: boolean;
     locked?: boolean;
     burned?: boolean;
+    /** 锁仓到期时间（只有锁仓程序自己能给出时才有值） */
     unlockAt?: string;
+    /** 锁仓方名称，例如 "Printr Stake Pool" */
     locker?: string;
+    /** 锁定或销毁的 LP 占比（%），用于说明结论的依据 */
+    lockedPct?: number;
+    /** 未锁定时，持有 ≥95% LP 的单一地址 */
     holder?: string;
+    /** 未锁定/未销毁，且 LP 集中在单一地址（可随时撤池） */
     singleHolder?: boolean;
   };
   supply?: number;
@@ -95,20 +117,38 @@ export interface ContractInfo {
 export interface LiquidityInfo {
   /** 毕业前 = bonding curve 内真实 SOL；毕业后 = 池内 SOL */
   realSolReserves?: number;
-  virtualSolReserves?: number;
-  graduationTargetSol?: number;
   graduated?: boolean;
   complete?: boolean;
-  /** 是否检测到池内资金被抽走 */
-  liquidityPulled?: boolean;
-  lpLockedOrBurned?: boolean;
+  /**
+   * RugCheck 已将该代币判定为 rug。
+   *
+   * 只写 `true`：`false` 不代表安全（RugCheck 的判定只覆盖它见过的数据），
+   * 因此不用它生成任何「积极信号」。
+   */
+  rugged?: boolean;
+  /**
+   * 买入/卖出金额（SOL）。
+   *
+   * **只由 Helius 逐笔成交写入**（单位真的是 SOL）。DexScreener 的成交额是
+   * USD 口径，写在 `buyVolumeUsd`/`sellVolumeUsd` 里 —— 两者绝不混用：
+   * 曾经把 USD 当 SOL 喂给「净流入 / 刷量」判定，净流入直接虚高 150 倍。
+   */
   buyVolumeSol?: number;
   sellVolumeSol?: number;
+  /** 买入/卖出金额（USD），DexScreener 的推算拆分 */
+  buyVolumeUsd?: number;
+  sellVolumeUsd?: number;
   buyCount?: number;
   sellCount?: number;
+  /**
+   * 狙击仓位占比（%）。
+   *
+   * 只由「最早成交的买家 ∩ 前 20 大持仓」推算，取不到最早成交时是 undefined
+   * （未知），不是 0。仅覆盖前 20 大持仓窗口，属于下限估计。
+   */
   sniperHoldPct?: number;
+  /** 持有人总数（RugCheck `totalHolders`） */
   holderCount?: number;
-  holderGrowth24h?: number;
   /** 池地址，用于持仓剔除 */
   poolAddresses?: string[];
   priceChange24h?: number;
@@ -118,8 +158,14 @@ export interface LiquidityInfo {
 
 export interface DeveloperInfo {
   creator?: string;
-  priorTokens?: { mint: string; symbol?: string; rugged?: boolean; createdAt?: string }[];
-  priorRugCount?: number;
+  /**
+   * 该 creator 历史发行过的其它代币。
+   *
+   * ⚠️ **只有铸币记录，没有结局**：判断其中哪些是 rug 需要那些代币的价格与
+   * 流动性历史，本工具只用单次查询，不猜。因此这里绝不写入 `rugged` 字段，
+   * 分析器也不得据此输出「历史记录干净」。
+   */
+  priorTokens?: { mint: string; symbol?: string; createdAt?: string }[];
   tokensLast7d?: number;
   devSoldRatio?: number;
   devHoldingPct?: number;
@@ -138,11 +184,8 @@ export interface DeveloperInfo {
   /** creator 当前在该代币上的链上余额（UI 单位），权威判据 */
   devCurrentBalance?: number;
   devFirstSellAgeSec?: number;
-  pulledLiquidity?: boolean;
-  fundedByMixer?: boolean;
-  hopCount?: number;
+  /** creator 的首笔资金来源钱包（首笔交易的付款方），不是「混币证据」 */
   linkedWallets?: string[];
-  twitterAgeDays?: number;
 }
 
 export interface SocialInfo {
@@ -168,7 +211,7 @@ export interface ScanInput {
 }
 
 /** 数据来源追踪：每个字段组的可信度 */
-export type FieldOrigin = 'onchain' | 'dexscreener' | 'heuristic' | 'unavailable';
+export type FieldOrigin = 'onchain' | 'dexscreener' | 'rugcheck' | 'heuristic' | 'unavailable';
 
 export interface ScanMeta {
   /** 数据源标识，例如 "solana-rpc + dexscreener" */

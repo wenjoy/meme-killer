@@ -32,7 +32,6 @@ export type HolderKind =
   | 'timelock'
   | 'custody'
   | 'dev'
-  | 'team'
   | 'sniper'
   | 'retail';
 
@@ -55,12 +54,11 @@ export function classifyHolder(
   if (poolAddresses?.has(addr)) return 'pool';
   if (holder.isPool) return 'pool';
   if (holder.isBurn || burnAddresses.has(addr)) return 'burn';
-  // 托管判定放在 dev/team 之前：锁仓仓位即便属于 dev，也不该按「可随时砸盘」算
+  // 托管判定放在 dev 之前：锁仓仓位即便属于 dev，也不该按「可随时砸盘」算
   if (holder.custody?.kind === 'timelock') return 'timelock';
   if (holder.custody) return 'custody';
   if (POOL_LABEL_PATTERN.test(addr) || POOL_LABEL_PATTERN.test(holder.label ?? '')) return 'pool';
   if (creator && addr === creator) return 'dev';
-  if (holder.isTeamWallet) return 'team';
   if (holder.isSniper) return 'sniper';
   return 'retail';
 }
@@ -107,7 +105,6 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     timelock: 0,
     custody: 0,
     dev: 0,
-    team: 0,
     sniper: 0,
     retail: 0,
   };
@@ -122,8 +119,10 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   const circulating = classified.filter((h) => !isExcludedKind(h.kind));
   const top10Pct = circulating.slice(0, 10).reduce((s, h) => s + h.pct, 0);
   const largest = circulating[0];
+  // 只有 dev 本人（链上确认的 creator 地址）。
+  // 「团队关联钱包」需要链上资金图谱佐证，当前没有数据源，因此不猜。
   const devClusterPct = circulating
-    .filter((h) => h.kind === 'dev' || h.kind === 'team')
+    .filter((h) => h.kind === 'dev')
     .reduce((s, h) => s + h.pct, 0);
   const sniperPct = circulating.filter((h) => h.kind === 'sniper').reduce((s, h) => s + h.pct, 0);
 
@@ -158,8 +157,8 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
 
   // 巨鲸判断针对「能随时卖出」的持仓。多签/托管能随时转出，所以算；
   // 时间锁仓不能卖，已在 circulating 里被剔除，不会走到这里。
-  if (largest && largest.kind !== 'dev' && largest.kind !== 'team' && largest.pct > t.singleWalletWarn) {
-    const who = largest.custody ? `程序托管仓位（${largest.custody.label}）` : '非 dev/team 钱包';
+  if (largest && largest.kind !== 'dev' && largest.pct > t.singleWalletWarn) {
+    const who = largest.custody ? `程序托管仓位（${largest.custody.label}）` : '非 dev 钱包';
     add(
       largest.pct > 20 ? 'high' : 'medium',
       '存在单一巨鲸',
@@ -203,7 +202,8 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     );
   }
 
-  if (otherCustodyPct > 0) {
+  // 尘埃级托管（< custodyWarnPct）不出 finding：0.0% 的持仓提示只会淹没真正重要的信号
+  if (otherCustodyPct >= t.custodyWarnPct) {
     const others = custodyList.filter((c) => c.kind !== 'timelock');
     add(
       'medium',
@@ -214,17 +214,23 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
   }
 
   if (devClusterPct > t.devClusterDanger) {
-    add('high', 'dev 及关联钱包持仓偏高', `dev/团队关联钱包合计持有 ${devClusterPct.toFixed(1)}%（阈值 ${t.devClusterDanger}%）。`);
+    add('high', 'dev 持仓偏高', `creator 地址持有流通盘 ${devClusterPct.toFixed(1)}%（阈值 ${t.devClusterDanger}%）。`);
   } else if (devClusterPct > 0) {
-    add('good', 'dev 持仓在合理范围', `dev/团队合计 ${devClusterPct.toFixed(1)}%。`);
+    add('good', 'dev 持仓在合理范围', `creator 地址持有 ${devClusterPct.toFixed(1)}%。`);
   }
 
   if (sniperPct > t.sniperWalletDanger) {
-    add('medium', '狙击钱包筹码偏多', `狙击机器人合计持有 ${sniperPct.toFixed(1)}%，随时可能砸盘。`);
+    add(
+      sniperPct > 45 ? 'high' : 'medium',
+      '狙击钱包筹码偏多',
+      `最早成交的钱包目前合计持有 ${sniperPct.toFixed(1)}%，随时可能砸盘。` +
+        '（已排除 creator 自买；只统计仍留在前 20 大持仓里的部分，因此是下限。未知时不会出现在这里。）',
+    );
   }
 
-  const holderCount = data.liquidity?.holderCount ?? 0;
-  if (holderCount > 0 && holderCount < t.minHolderCount && top10Pct > t.top10Warn) {
+  // 持有人总数来自 RugCheck；undefined = 拿不到，不是 0
+  const holderCount = data.liquidity?.holderCount;
+  if (holderCount !== undefined && holderCount > 0 && holderCount < t.minHolderCount && top10Pct > t.top10Warn) {
     add('high', '持有人少且集中', `仅 ${holderCount} 个持有人，配合 ${top10Pct.toFixed(1)}% 的集中度，缺乏出货深度。`);
   }
 
@@ -239,7 +245,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       excludedPct,
       devClusterPct,
       sniperPct,
-      holderCount,
+      ...(holderCount !== undefined ? { holderCount } : {}),
       circulatingCount: circulating.length,
       byKind,
       custody: custodyList,

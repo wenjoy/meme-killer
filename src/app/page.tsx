@@ -151,16 +151,16 @@ export default function Home() {
             <h2 className="mb-2 text-sm font-semibold text-ink-300">五个维度</h2>
             <ul className="space-y-1.5 text-xs leading-relaxed text-ink-400">
               <li>
-                <span className="text-ink-200">合约安全</span> 30% · 权限是否放弃、Token-2022 作恶扩展、LP 锁定
+                <span className="text-ink-200">合约安全</span> 30% · 权限是否放弃、Token-2022 作恶扩展、LP 锁定/销毁（RugCheck）
               </li>
               <li>
-                <span className="text-ink-200">流动性 &amp; 资金流</span> 25% · 抽池、刷量、蜜罐、抛压
+                <span className="text-ink-200">流动性 &amp; 资金流</span> 25% · 曲线真实 SOL、刷量、蜜罐、抛压
               </li>
               <li>
                 <span className="text-ink-200">持币集中度</span> 20% · 剔除池与 burn 后的 Top10 占比
               </li>
               <li>
-                <span className="text-ink-200">开发者历史</span> 15% · 历史发币、dev 卖出、资金来源（需 Helius Enhanced API）
+                <span className="text-ink-200">开发者历史</span> 15% · 历史发币数量、dev 卖出（需 Helius Enhanced API）
               </li>
               <li>
                 <span className="text-ink-200">社交热度</span> 10% · 需第三方社交数据源（未接入则不计分）

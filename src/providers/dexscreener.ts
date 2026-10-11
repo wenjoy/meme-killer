@@ -110,13 +110,16 @@ export async function fetchDexScreener(mint: string): Promise<DexResult> {
       priceChange24h: pair.priceChange?.h24,
       buyCount: buys,
       sellCount: sells,
-      // ⚠️ 下面是按笔数占比推算的金额拆分，不是原始数据
-      buyVolumeSol: vol * buyShare,
-      sellVolumeSol: vol * (1 - buyShare),
+      // ⚠️ 这里是**按笔数占比推算的 USD 成交额**，不是原始数据，也**不是 SOL**。
+      // 曾经把它写进 buyVolumeSol / sellVolumeSol，于是分析器把美元当 SOL 用：
+      // 「净流入 +X SOL」显示的其实是美元，刷量阈值（0.5 SOL）永远不可能触发。
+      // 现在写进 USD 字段，分析器只在拿不到逐笔成交（SOL 口径）时才用它，
+      // 且只用与单位无关的「卖单额占比」，不再算净流入。
+      buyVolumeUsd: vol * buyShare,
+      sellVolumeUsd: vol * (1 - buyShare),
       // DexScreener 有池子即说明已从 curve 毕业（存在真实 AMM 池）
       graduated: true,
       complete: true,
-      realSolReserves: undefined,
     };
 
     return { token, liquidity, origin: 'dexscreener' };

@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PublicKey } from '@solana/web3.js';
 
-import { deriveAta, resolvePoolAddresses } from './pools.ts';
+import { decodeBondingCurve, deriveAta, deriveBondingCurve, PUMP_BONDING_CURVE_PROGRAM, resolvePoolAddresses } from './pools.ts';
 import { classifyHolder } from '../core/analyzers/holders.ts';
 
 // 一个合法的 mint 地址（USDC，仅用于推导形状，与 pump.fun 无关）
@@ -16,18 +16,18 @@ const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const CREATOR = '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM';
 
 test('推导出的地址都是合法 base58，且确定性可复现', () => {
-  const a = resolvePoolAddresses(MINT, CREATOR, []);
+  const a = resolvePoolAddresses(MINT, []);
   assert.ok(a.addresses.size > 0, '至少应推导出 bonding curve');
   for (const addr of a.addresses) {
     assert.doesNotThrow(() => new PublicKey(addr), `${addr} 应为合法地址`);
   }
   // 同样输入必须得到同样输出，否则剔除逻辑会随机漂移
-  const b = resolvePoolAddresses(MINT, CREATOR, []);
+  const b = resolvePoolAddresses(MINT, []);
   assert.deepEqual([...a.addresses].sort(), [...b.addresses].sort());
 });
 
 test('bonding curve 与它的 ATA 都被识别为池', () => {
-  const r = resolvePoolAddresses(MINT, undefined, []);
+  const r = resolvePoolAddresses(MINT, []);
   const labels = Object.values(r.labels);
   assert.ok(labels.includes('pump.fun bonding curve'));
   assert.ok(
@@ -50,19 +50,20 @@ test('派生 ATA 与手工推导一致', () => {
   assert.equal(ata, manual);
 });
 
-test('无 creator 时不推导 PumpSwap 池（缺参数不能瞎猜）', () => {
-  const withCreator = resolvePoolAddresses(MINT, CREATOR, []);
-  const without = resolvePoolAddresses(MINT, undefined, []);
+test('不再推导未经校验的 PumpSwap 池地址（错的推导比没有更糟）', () => {
+  // 实测：按 (creator, index 0) 推导出的 PumpSwap 池地址在链上并不存在
+  // （建池者是迁移权限账户，不是代币创建者）。这类「看起来很像池」的随机地址
+  // 会让人误以为 AMM 池已覆盖，因此已删除，改由 RugCheck 提供真实池地址。
+  const r = resolvePoolAddresses(MINT, []);
   assert.ok(
-    withCreator.addresses.size > without.addresses.size,
-    '有 creator 时应多推导出 PumpSwap 池',
+    Object.values(r.labels).every((l) => !l.startsWith('PumpSwap')),
+    '不应再有 PumpSwap 的猜测结果',
   );
-  assert.ok(Object.values(without.labels).every((l) => !l.startsWith('PumpSwap')));
 });
 
 test('DexScreener pair 地址及其 ATA 被纳入池集合', () => {
   const pair = '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2';
-  const r = resolvePoolAddresses(MINT, undefined, [pair]);
+  const r = resolvePoolAddresses(MINT, [pair]);
   assert.ok(r.addresses.has(pair), 'pair 地址本身应被识别');
   assert.ok(r.labels[pair] === 'DexScreener pair');
   const pairAta = deriveAta(pair, MINT);
@@ -72,7 +73,7 @@ test('DexScreener pair 地址及其 ATA 被纳入池集合', () => {
 test('用推导结果剔除池持仓后，集中度不会被池的巨额持仓污染', () => {
   // 真实场景：bonding curve 持有 62% 供应量。
   // 若没识别出它，Top10 会虚高到 80%+ 并误报「庄家控盘」。
-  const pools = resolvePoolAddresses(MINT, undefined, []);
+  const pools = resolvePoolAddresses(MINT, []);
   const curveAddr = [...pools.addresses][0];
 
   const holders = [
@@ -94,16 +95,45 @@ test('用推导结果剔除池持仓后，集中度不会被池的巨额持仓�
 });
 
 test('非法 mint 不抛错，而是降级并给出告警', () => {
-  const r = resolvePoolAddresses('not-a-valid-address', CREATOR, []);
+  const r = resolvePoolAddresses('not-a-valid-address', []);
   assert.equal(r.addresses.size, 0);
   assert.ok(r.warnings.length > 0, '必须显式告警，而不是静默返回空集合');
 });
 
 test('完全推导不出池时必须告警（否则用户不知道 Top10 偏高）', () => {
-  const r = resolvePoolAddresses(MINT, undefined, []);
+  const r = resolvePoolAddresses(MINT, []);
   // 这个 mint 能推出 bonding curve，所以不该告警
   assert.equal(r.warnings.length, 0);
 
-  const bad = resolvePoolAddresses('x'.repeat(10), undefined, []);
+  const bad = resolvePoolAddresses('x'.repeat(10), []);
   assert.ok(bad.warnings.some((w) => w.includes('mint 地址无法解析') || w.includes('未能推导')));
+});
+
+// ── bonding curve 解码 ───────────────────────────────────────────
+// 阶段判定曾用「账户是否存在」来推断，结果给已毕业的代币报出
+// 「尚未毕业 + curve 内 SOL 0」；正确判据是账户里的 complete 标志。
+test('curve 账户的 complete 标志才是阶段判据，账户存在不能当未毕业', () => {
+  const curve = deriveBondingCurve(MINT)!;
+  const make = (complete: number, realSol: bigint) => {
+    const data = Buffer.alloc(166);
+    Buffer.from('17b7f83760d8ac60', 'hex').copy(data, 0);
+    data.writeBigUInt64LE(30_000_000_000n, 16); // virtualSolReserves ≈ 30 SOL
+    data.writeBigUInt64LE(realSol, 32);
+    data.writeBigUInt64LE(1_000_000_000_000_000n, 40);
+    data[48] = complete;
+    return data;
+  };
+
+  const onCurve = decodeBondingCurve(PUMP_BONDING_CURVE_PROGRAM, make(0, 604_535_550n));
+  assert.equal(onCurve?.complete, false);
+  assert.ok(Math.abs((onCurve?.realSolReserves ?? 0) - 0.60453555) < 1e-9);
+
+  const migrated = decodeBondingCurve(PUMP_BONDING_CURVE_PROGRAM, make(1, 0n));
+  assert.equal(migrated?.complete, true, '已毕业的账户仍然存在，因此必须看标志而不是看存在性');
+
+  // 校验不过就必须返回 null：按内存布局硬读会从无关账户里读出一个假余额
+  assert.equal(decodeBondingCurve('SomeOtherProgram111111111111111111111111111', make(0, 5n)), null);
+  assert.equal(decodeBondingCurve(PUMP_BONDING_CURVE_PROGRAM, Buffer.alloc(166)), null);
+  assert.equal(decodeBondingCurve(PUMP_BONDING_CURVE_PROGRAM, Buffer.alloc(20)), null);
+  assert.ok(curve, 'curve 地址应能推导出来');
 });

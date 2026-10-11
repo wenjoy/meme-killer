@@ -40,27 +40,29 @@ HELIUS_API_KEY=""     # 可选：RPC URL 里带了 api-key 就不用重复填
 
 ## 数据来源与维度覆盖
 
-三个数据源，各司其职：
+四个数据源，各司其职：
 
 | 数据源 | 提供什么 | 需要 key |
 |---|---|---|
-| **Solana RPC** | mint 账户原始字节：mint/freeze 权限、Token-2022 TLV 扩展、最大持仓 | 是（推荐 Helius） |
+| **Solana RPC** | mint 账户原始字节：mint/freeze 权限、Token-2022 TLV 扩展、最大持仓、bonding curve 账户（真实 SOL + 是否毕业） | 是（推荐 Helius） |
 | **Helius DAS `getAsset`** | 名称、符号、图片、供应量、精度、代币程序、单价/市值、mint 扩展 | 是（同一个 key） |
-| **Helius Enhanced API** | 部署者身份、逐笔买卖方向与金额、dev 持仓与卖出、历史发币 | 是（同一个 key） |
+| **Helius Enhanced API** | 部署者身份、逐笔买卖方向与金额、dev 持仓与卖出、历史发币、最早成交（狙击窗口） | 是（同一个 key） |
 | **DexScreener** | 价格、市值、流动性 USD、AMM pair 地址 | 否（公开免费，可用时自动启用） |
+| **RugCheck** | **LP 锁定/销毁比例与 LP 持有者**、持有人总数、AMM 池与金库账户、风险项 | 否（公开免费） |
 
 对应的维度覆盖情况：
 
 | 维度 | 权重 | 数据来源 | 无 Helius key 时 |
 |---|---|---|---|
-| 合约安全 | 30% | Solana RPC + DAS | 可计算 |
-| 流动性 & 资金流 | 25% | Enhanced API 逐笔成交（+ DexScreener 补 USD） | **标记未采集** |
-| 持币集中度 | 20% | Solana RPC + PDA 推导 | 可计算 |
+| 合约安全 | 30% | Solana RPC + DAS + RugCheck（LP 锁定/销毁） | RugCheck 不可达时 LP 状态标「未知」 |
+| 流动性 & 资金流 | 25% | RPC 读 bonding curve 账户 + Enhanced API 逐笔成交（+ DexScreener 补 USD） | **标记未采集** |
+| 持币集中度 | 20% | Solana RPC + PDA 推导 + RugCheck（持有人总数 / 池金库） | 可计算 |
 | 开发者历史 | 15% | Enhanced API + 余额查询 | **标记未采集** |
 | 社交热度 | 10% | 需 X/TG 第三方服务（**当前未接入**） | 不计分 |
 
-只有 DexScreener 挂了不影响结论：买卖笔数与金额来自 Helius 的逐笔成交，
-不需要 DexScreener（后者只用于补 USD 口径的价格/流动性）。
+只有 DexScreener 挂了不影响买卖结构：买卖笔数与金额来自 Helius 的逐笔成交，
+RugCheck 还会补上持有人总数与池深度。反过来 RugCheck 挂了也只影响
+「LP 锁定/销毁」与「持有人总数」两项，报告会明确标成「未知」并给出告警。
 
 社交热度是唯一没有真实数据源的维度：Helius 不提供社交数据，
 链上也拿不到社区质量。因此它**恒为「未采集」且不计入评分** ——
@@ -71,9 +73,10 @@ HELIUS_API_KEY=""     # 可选：RPC URL 里带了 api-key 就不用重复填
 | 维度 | 否决条件 |
 |---|---|
 | 合约安全 | mint / freeze authority 未放弃；Token-2022 含 TransferHook / PermanentDelegate |
-| 流动性 | 已抽池；买盘一边倒但卖单笔数 < 5%（蜜罐） |
+| 流动性 | 买盘一边倒但卖单笔数 < 5%（蜜罐） |
 | 持币集中度 | 剔除池/burn 后 Top10 > 40% |
-| 开发者历史 | 历史 rug ≥ 2 次；dev 已清仓 |
+| 开发者历史 | dev 已清仓 |
+| 合约安全 | LP **已核实未锁定也未销毁**且由单一地址持有（可随时撤池） |
 
 风险等级：`< 25` 低 · `25–45` 中 · `45–65` 高 · `> 65` 极高。
 **命中否决时总分直接拉满 100** —— 保证分数与结论不矛盾。
@@ -93,10 +96,17 @@ bonding curve / AMM pool 天然持有大部分供应量。不剔除，任何正�
 **几乎永远匹配不到** —— 只会让人误以为已经处理过了。所以 `pools.ts` 用确定性推导：
 
 - pump.fun bonding curve PDA：`seeds = ["bonding-curve", mint]`
-- PumpSwap 池 PDA：`seeds = ["pool", index, creator, base_mint, quote_mint]`
 - **池的 ATA**：池持有代币用的是它的 associated token account，
   只认池地址会漏掉真正的持仓账户
 - DexScreener 的 `pairAddress`（AMM 池地址的直接来源）
+- RugCheck 的 `market.pubkey / liquidityA / liquidityB`：**真实存在**的池与金库账户
+  （Raydium v4 之类独立 vault 只有它能给出）
+- 持仓匹配时 **owner 与 token account 任一命中即算池**（只看 owner 会漏掉金库）
+
+曾经还推导过 PumpSwap 池 PDA（`seeds = ["pool", index, creator, …]`）。
+实测该推导对真实代币算出的地址在链上**并不存在**（建池者是迁移权限账户，
+不是代币创建者）—— 一串「看起来很像池」的随机地址。未经校验的推导比没有更糟，
+已删除。
 
 `pools.test.ts` 锁住了这一点：同一份数据，认不出池就会误报庄家控盘。
 
@@ -111,7 +121,8 @@ bonding curve / AMM pool 天然持有大部分供应量。不剔除，任何正�
 **判成了安全**。这是比误报更糟的一类错误 —— 误报只是吓跑用户，
 漏报会让人真的亏钱。
 
-所以池地址只认两种**确定性**来源：PDA 推导、DexScreener 的 pair 地址。
+所以池地址只认**确定性推导**与**权威数据源**：PDA 推导、DexScreener 的 pair 地址、
+RugCheck 给出的池与金库账户。
 漏掉池会让集中度偏高（已在 warnings 里如实说明），这比抹掉真实筹码安全得多。
 
 ### 3. 「已清仓」只能由链上余额判定，不能由流水比例判定
@@ -194,7 +205,32 @@ Pump.fun 的交易由**用户钱包**签名，fee payer 往往是买家而不是
 单次 RPC 查询无法负责任地断言 —— 因此 `priorRugCount` **不猜**，
 宁可留空也不用启发式编一个看起来确定的数字。
 
-### 13. 「有账户」不等于「是钱包」—— 看 owner 程序，别看到账户就放行
+### 13. 声明了却没有任何 provider 写入的字段 = 死分支
+
+比「猜」更隐蔽的一类错误：**schema 里有字段、分析器里消费了它，但没有一个
+provider 会写它**。于是分支永远走同一条，结论永远同一种，而代码看起来
+「检查过了」。
+
+真实案例：`contract.lp.locked / burned` 与 `liquidity.lpLockedOrBurned`
+从来没有任何数据源写入。后果是三重的：
+
+1. **「LP 已销毁 / 已锁定」这两条好事永远不可能出现**（死代码）；
+2. 每个有池的代币都固定背一条 high 风险「LP 锁定状态未知」，
+   而真正的风险（LP 由单一地址持有、随时可撤）根本没被识别；
+3. 同一事实在 `contract.ts` 与 `liquidity.ts` 各判一次，**重复扣分**。
+
+修法是二选一，绝不允许「留着好看」：接真实数据源把它填上（现在由 RugCheck
+提供 LP 比例与 LP 持有者），或者删掉字段与分支。同批清理的还有
+`liquidityPulled` / `pulledLiquidity`（抽池没有前后快照可判）、
+`fundedByMixer` / `hopCount`（跳数接口已下线）、`isTeamWallet`（没有资金图谱）、
+`virtualSolReserves` / `graduationTargetSol` / `holderGrowth24h`（无来源），
+以及 `priorTokens[].rugged`（要么真去回溯历史，要么别声称「记录干净」）。
+
+**判据**：一个字段若只出现在 `types.ts`、分析器和 fixtures 里，
+却从没出现在 `providers/` 的赋值语句右边 —— 它就是死字段。
+对应的测试也补上了：`引擎测试 §9` 专门锁「字段没人写 ≠ 字段是 false」。
+
+### 14. 「有账户」不等于「是钱包」—— 看 owner 程序，别看到账户就放行
 
 判断一个持仓是个人还是程序托管，唯一可靠的判据是**账户的 owner 程序**：
 
@@ -215,7 +251,7 @@ owner 正是 Lock 程序。结果 `9raUVuzeWUk…pump` 上那个占 **72% 供应
 同理，池子也不该靠地址文本猜：用 **AMM 程序 id** 判定其拥有的账户是储备金库，
 比正则可靠得多（实测某代币的 PumpSwap 金库占 5.15%，旧的池识别完全没认出来）。
 
-### 14. 锁仓要剔除，但**多签不能剔除**，且剔除后必须列出来
+### 15. 锁仓要剔除，但**多签不能剔除**，且剔除后必须列出来
 
 「巨鲸 / 集中度」只应统计**能随时卖出**的筹码，所以时间锁仓必须剔除。
 但这里有两个坑：
@@ -267,18 +303,20 @@ src/
     engine.ts             编排五维 → 硬否决短路 → 加权总分 → 中文报告
     analyzers/
       contract.ts         合约安全：权限、Token-2022 扩展、转移税、LP 锁定
-      liquidity.ts        流动性：抽池、刷量、蜜罐、抛压、狙击
-      holders.ts          持币集中度：先分类剔除池/burn，再算占比
-      developer.ts        开发者履历：历史 rug、批量发币、dev 清仓
+      liquidity.ts        流动性：bonding curve 深度、刷量、蜜罐、抛压（+ 单位纪律）
+      holders.ts          持币集中度：先分类剔除池/burn，再算占比（含狙击筹码）
+      developer.ts        开发者履历：发币数量、dev 清仓（历史结局不猜）
       social.ts           社交热度：刷量识别（不做否决）
     fixtures.ts           测试夹具（仅测试用，不参与运行时）
     engine.test.ts        引擎与分析器测试
   providers/
     helius.ts             Solana RPC + DAS getAsset + Enhanced API（元数据/部署者/成交明细）
-    pools.ts              池地址确定性推导（bonding curve / PumpSwap PDA / ATA）
+    pools.ts              曲线账户推导与解码（阶段 + 真实 SOL）、池 ATA 推导
     dexscreener.ts        市场数据：价格、成交量、买卖笔数、pair 地址
+    rugcheck.ts           LP 锁定/销毁与 LP 持有者、持有人总数、池金库、风险项
     index.ts              采集编排 + 优雅降级
-    pools.test.ts         池推导测试
+    pools.test.ts         池推导与曲线解码测试
+    rugcheck.test.ts      RugCheck 映射测试（含 bonding curve 陷阱）
   app/
     page.tsx              首页：地址输入 + 数据源能力自检
     api/scan/route.ts     POST /api/scan、GET /api/scan（能力自检）
@@ -320,8 +358,18 @@ curl -X POST http://127.0.0.1:5273/api/scan \
 **请务必区分「链上事实」与「推算值」。**
 
 - **社交热度无数据源** —— Helius 不提供，链上也拿不到，恒为「未采集」
-- **历史 rug 数不计算** —— 需要价格与流动性历史，本工具只用单次查询，不猜
-- **LP 锁定状态无法从 RPC 判定** —— 需解析锁仓程序或接 RugCheck，当前标为「未知」
+- **历史 rug 数不计算** —— 需要价格与流动性历史，本工具只用单次查询；
+  因此只报「发过几个币」，结局一律标为**未核实**，绝不输出「历史记录干净」
+- **LP 锁定/销毁状态来自 RugCheck，不来自 RPC** —— RPC 拿不到「LP 在谁手里」。
+  RugCheck 不可达、未覆盖该池、或该池的 LP mint 还没索引出来时，
+  一律标「未知」并给出告警，**不会因为查不到就当成安全或危险**
+- **bonding curve 的阶段与真实 SOL 来自链上账户的 `complete` 标志** ——
+  不能用「账户是否存在」推断：实测已毕业代币的曲线账户常常仍然存在、
+  余额被清空（据此判会得到「尚未毕业 + curve 内 SOL 0」两条假结论）
+- **抽池检测未接入** —— 判定「资金被抽走」需要两次快照对比，
+  单次扫描只能看到当下的池深度，因此不做这项判断
+- **狙击占比是下限估计** —— 取最早 25 笔成交的付款方 ∩ 当前前 20 大持仓，
+  只覆盖前 20 大窗口；拿不到最早成交时为「未知」，不是「没有狙击」
 - **只有 Jupiter Lock 的解锁时间**已接入（布局经真实账户三重交叉验证）；
   Streamflow 等其它锁仓程序仍是「待接入」（**不是**「已解锁」）
 - **AMM 程序 id 白名单**目前覆盖 pump.fun 曲线 / PumpSwap / Meteora DLMM /
@@ -336,6 +384,9 @@ curl -X POST http://127.0.0.1:5273/api/scan \
   这类池持仓可能未被剔除，会让 Top10 偏高；命中时会在 warnings 里提示
 - **买卖笔数与金额来自 Helius 逐笔成交**（非 DexScreener 的聚合值），
   样本为最近 100 笔；代币刚开盘或交易极多时，该窗口不代表全历史
+- **单位绝不混用**：SOL 口径的净流入/刷量只用逐笔成交算；
+  DexScreener 的成交额是 USD，另存为 `buyVolumeUsd / sellVolumeUsd`，
+  只参与与单位无关的占比判定（曾经把 USD 当 SOL，净流入虚高上百倍）
 - **DexScreener 可能不可达**（网络/区域限制）—— 不影响买卖结构，
   但价格、市值、流动性 USD 会缺失，报告会如实标注「市场数据缺失」
 - **部署者身份取自创建交易的 fee payer** —— 真实 pump.fun 代币的
@@ -355,7 +406,7 @@ curl -X POST http://127.0.0.1:5273/api/scan \
 - [ ] 按解锁时间给出「临近解锁 = 抛压将至」的提示
 - [ ] 接入 X/TG 社交数据源，让「社交热度」维度真正生效
 - [ ] 接入索引器回溯 creator 历史代币的价格/流动性，计算真实 rug 率
-- [ ] 用 Raydium/Meteora 的 vault 账户列表补全池剔除
+- [x] 接入 RugCheck：LP 锁定/销毁、LP 持有者、持有人总数、池金库账户
 - [ ] 交易历史翻页聚合，让买卖结构与 dev 卖出比例覆盖全历史而非最近 100 笔
 - [ ] 新币发现榜 + 批量扫描排序
 - [ ] 自选监控与定时复扫、风险变化提醒

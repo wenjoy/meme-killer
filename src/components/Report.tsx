@@ -86,6 +86,7 @@ function Provenance({ report }: { report: ScanReport }) {
   const ORIGIN_LABEL: Record<string, { text: string; tone: string }> = {
     onchain: { text: '链上', tone: 'text-safe' },
     dexscreener: { text: 'DexScreener', tone: 'text-accent' },
+    rugcheck: { text: 'RugCheck', tone: 'text-accent' },
     heuristic: { text: '推算', tone: 'text-warn' },
     unavailable: { text: '未采集', tone: 'text-ink-400' },
   };
@@ -280,24 +281,42 @@ export function Report({ report }: { report: ScanReport }) {
                   {key === 'liquidity' && (
                     <>
                       <div className="flex justify-between">
-                        <dt>净流入</dt>
+                        <dt>阶段</dt>
+                        <dd className="text-ink-200">
+                          {Number(m.graduated) === 1 ? '已毕业(AMM)' : Number(m.graduated) === 0 ? '曲线中' : '—'}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between">
+                        <dt>curve SOL</dt>
+                        <dd className="text-ink-200">{num(m.realSolReserves)}</dd>
+                      </div>
+                      <div className="flex justify-between">
+                        <dt>净流入 SOL</dt>
                         <dd className="text-ink-200">{num(m.netInflowSol)}</dd>
                       </div>
                       <div className="flex justify-between">
                         <dt>卖单额</dt>
                         <dd className="text-ink-200">{num(m.sellSharePct)}%</dd>
                       </div>
+                      <div className="flex justify-between">
+                        <dt>持有人</dt>
+                        <dd className="text-ink-200">{num(m.holderCount)}</dd>
+                      </div>
                     </>
                   )}
                   {key === 'developer' && (
                     <>
                       <div className="flex justify-between">
-                        <dt>历史 rug</dt>
-                        <dd className="text-ink-200">{num(m.priorRugCount)}</dd>
+                        <dt>历史发币</dt>
+                        <dd className="text-ink-200" title="只统计发币数量；这些代币的结局（是否 rug）本工具不回溯，因此不判定">
+                          {num(m.priorTokenCount)} 个
+                        </dd>
                       </div>
                       <div className="flex justify-between">
                         <dt>dev 卖出</dt>
-                        <dd className="text-ink-200">{((Number(m.devSoldRatio) || 0) * 100).toFixed(0)}%</dd>
+                        <dd className="text-ink-200">
+                          {m.devSoldRatio === undefined ? '—' : `${(Number(m.devSoldRatio) * 100).toFixed(0)}%`}
+                        </dd>
                       </div>
                     </>
                   )}

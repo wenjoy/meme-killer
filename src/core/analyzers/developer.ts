@@ -3,7 +3,9 @@
  *
  * 关键认知：
  * - 追溯路径：mint 的 create 交易 → fee payer / signer = creator。
- * - Rug 特征：creator 多个 mint 在数小时内陆续死亡。
+ * - ⚠️「历史 rug 率」本工具**不计算**：那需要每个历史代币的价格与流动性历史，
+ *   单次查询做不到。所以这里只报「发过几个币」，结局一律标为「未核实」，
+ *   绝不输出「历史记录干净」这种没有数据支撑的利好。
  * - dev sell 检测：筛 user == creator 且 isBuy == false 的成交，
  *   算 devSoldRatio = 卖出 token / 买入 token。
  *
@@ -48,20 +50,23 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   }
 
   const priorTokens = d.priorTokens ?? [];
-  const rugCount = d.priorRugCount ?? priorTokens.filter((p) => p.rugged).length;
 
-  // ── 历史 rug ────────────────────────────────────────────────────
-  if (rugCount >= t.priorRugDanger) {
-    veto(
-      '部署者有多次 rug 前科',
-      `该 creator 历史发行 ${priorTokens.length} 个代币，其中 ${rugCount} 个被判定为 rug pull。`,
-    );
-  } else if (rugCount === t.priorRugWarn) {
-    add('high', '部署者有 rug 前科', `历史 ${priorTokens.length} 个代币中有 ${rugCount} 个 rug。有过一次就很难相信第二次。`);
-  } else if (priorTokens.length === 0) {
+  // ── 历史发币 ────────────────────────────────────────────────────
+  //
+  // ⚠️ 这里曾经输出过一条**没有根据的利好**：`priorRugCount ?? priorTokens
+  //  .filter(rugged)` 两边都是空（没有任何 provider 能判定历史代币是否 rug），
+  // 于是只要有历史发币就报「历史记录干净」—— 把「不知道」说成了「没问题」。
+  // 判断历史 rug 需要那些代币的价格与流动性历史，本工具只用单次查询，做不到，
+  // 所以这里只报「发了几个」，结局一律标为未核实。
+  if (priorTokens.length === 0) {
     add('medium', '无历史发币记录', 'creator 是全新钱包。既没有前科，也没有可验证的成功履历 —— 无法据此加分。');
   } else {
-    add('good', '历史记录干净', `creator 发行过 ${priorTokens.length} 个代币，无 rug 记录。`);
+    add(
+      'low',
+      '历史发币结局未核实',
+      `该 creator 还发行过 ${priorTokens.length} 个代币，但本工具不做价格/流动性历史回溯，` +
+        '无法判断其中是否有 rug —— 请人工核对该地址的历史，不要当成「记录干净」。',
+    );
   }
 
   // 同一 creator 短期批量发币 —— 典型「广撒网」模式
@@ -113,14 +118,17 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
   }
 
   // ── 资金来源与关联 ──────────────────────────────────────────────
-  if (d.fundedByMixer) {
-    add('high', '资金来自混币/跳转钱包', `creator 资金经 ${d.hopCount ?? '多'} 跳中转转入，存在刻意隐藏资金来源的行为。`);
-  }
+  //
+  // 只做一件事：creator 的首笔资金是谁给的。这是链上可核实的事实，
+  // 但它**不是**「混币证据」（Helius 的 funded-by 接口已下线，跳数无法追溯），
+  // 所以只作低强度提示，不升级为风险结论。
   if ((d.linkedWallets?.length ?? 0) > 0) {
-    add('medium', '存在关联钱包簇', `发现 ${d.linkedWallets!.length} 个与 creator 资金关联的钱包，可能存在协同操作。`);
-  }
-  if (d.twitterAgeDays !== undefined && d.twitterAgeDays < 7) {
-    add('low', '项目方社交账号极新', `Twitter 账号创建仅 ${d.twitterAgeDays} 天。新号不等于骗子，但无法作为可信背书。`);
+    add(
+      'low',
+      'creator 的首笔资金来自其它钱包',
+      `首笔交易的资金来自 ${d.linkedWallets![0]}。这只能说明资金来源，` +
+        '无法据此判断是否为中介/混币 —— 请自行核对该钱包的性质。',
+    );
   }
 
   return {
@@ -131,10 +139,9 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
     findings,
     metrics: {
       priorTokenCount: priorTokens.length,
-      priorRugCount: rugCount,
-      tokensLast7d: d.tokensLast7d ?? 0,
-      devSoldRatio: soldRatio,
-      devHoldingPct: d.devHoldingPct ?? 0,
+      ...(d.tokensLast7d !== undefined ? { tokensLast7d: d.tokensLast7d } : {}),
+      ...(d.devSoldRatio !== undefined ? { devSoldRatio: soldRatio } : {}),
+      ...(d.devHoldingPct !== undefined ? { devHoldingPct: d.devHoldingPct } : {}),
     },
   };
 }

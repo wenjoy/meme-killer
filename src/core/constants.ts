@@ -67,17 +67,20 @@ export const THRESHOLDS = {
     singleWalletWarn: 10, // ⚠️ 单一非 dev 钱包 > 10%
     devClusterDanger: 15, // ⚠️ dev + 关联钱包合计 > 15%
     minHolderCount: 100, // 持有人数 < 100 且集中 → 无出货深度
-    sniperWalletDanger: 25, // ⚠️ 狙击钱包持仓占比
+    sniperWalletDanger: 25, // ⚠️ 狙击钱包持仓占比（只在这一处判定，避免两个维度重复计分）
+    custodyWarnPct: 1, // 程序托管（多签等）占比低于此值只是尘埃，不值得单独提示
   },
   liquidity: {
     sellPressureDanger: 60, // 卖方金额占比超过此值 → 抛压主导
     washTradeNetInflowSol: 0.5, // 笔数高但净流入低于此值 → 刷量
-    sniperWalletDanger: 25, // ⚠️ 狙击钱包持仓占比
+    // 刷量还要求「净流入/总成交额」足够小：只看绝对值时，
+    // 成交 40 SOL、净流出 0.3 SOL 的正常币也会被扣上刷量帽子。
+    washTradeNetRatio: 0.1,
     minRealSolReserves: 5, // curve 内真实 SOL 过低 → 极易被砸穿
   },
   developer: {
-    priorRugDanger: 2, // ⚠️ 历史 rug ≥ 2 次 → 硬否决
-    priorRugWarn: 1,
+    // 没有「历史 rug 次数」阈值：判定历史代币是否 rug 需要价格/流动性历史，
+    // 本工具只用单次查询做不到，因此宁可不判（见 analyzers/developer.ts 的说明）。
     devSoldRatioWarn: 0.3,
     devSoldRatioDanger: 0.8,
     fastDumpWindowSec: 3600, // 毕业后 1 小时内清仓算快速出货

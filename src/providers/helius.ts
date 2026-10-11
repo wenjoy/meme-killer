@@ -40,6 +40,7 @@ import type {
   SocialInfo,
   TokenInfo,
 } from '@/core/types';
+import { decodeBondingCurve, deriveBondingCurve } from '@/providers/pools';
 
 // ── 环境配置 ────────────────────────────────────────────────────────
 export const DEFAULT_RPC = 'https://api.mainnet-beta.solana.com';
@@ -391,6 +392,16 @@ export interface OnChainResult {
   token: Partial<TokenInfo>;
   contract: ContractInfo | null;
   holders: RawHolder[];
+  /**
+   * pump.fun bonding curve 账户。
+   *
+   * - `exists: true` + `complete: false`  还在曲线上，`realSolReserves` = 真实 SOL
+   * - `exists: true` + `complete: true`   已毕业（实测毕业后账户常常仍在，
+   *   只是余额被清空 —— 所以「账户存在」不能当作「未毕业」）
+   * - `exists: false` 账户不存在：既可能是已毕业且被回收，也可能不是
+   *   pump.fun 代币，**不能反推毕业**
+   */
+  curve?: { exists: true; complete: boolean; realSolReserves: number } | { exists: false };
   origins: Record<string, FieldOrigin>;
 }
 
@@ -593,7 +604,37 @@ export async function fetchOnChain(mint: string, warnings: string[]): Promise<On
     origins.holders = 'unavailable';
   }
 
-  return { token, contract: contractRead ? contract : null, holders, origins };
+  // ── 4. bonding curve 账户：未毕业代币的真实 SOL 与阶段判定 ────────
+  //
+  // ⚠️ 这一步补的是一个「永远拿不到值的字段」：
+  // 之前 realSolReserves 无人写入，metrics 里用 `?? 0` 兜底，
+  // 面板于是对每个未毕业代币都显示「curve 内 SOL 0」—— 一个凭空捏造的事实。
+  //
+  // 判定必须读账户里的 `complete` 标志，**不能看账户是否存在**：
+  // 实测已毕业代币的 curve 账户仍然存在、余额被清空（写 0 会变成假的「深度 0」），
+  // 而个别已毕业代币的账户又被回收（不存在）。两种都不能反推阶段。
+  let curve: OnChainResult['curve'];
+  const curveAddress = deriveBondingCurve(mint);
+  if (curveAddress) {
+    try {
+      const info = await connection.getAccountInfo(new PublicKey(curveAddress));
+      if (!info) {
+        curve = { exists: false };
+      } else {
+        const state = decodeBondingCurve(info.owner.toBase58(), info.data);
+        if (state) curve = { exists: true, ...state };
+        else
+          warnings.push(
+            `推导出的 bonding curve 地址 ${curveAddress} 不是 pump.fun 曲线账户` +
+              '（owner 或判别符不符），已忽略；curve 内真实 SOL 无法确认。',
+          );
+      }
+    } catch (err) {
+      warnings.push(`读取 bonding curve 账户失败：${msg(err)}（curve 内真实 SOL 无法确认）`);
+    }
+  }
+
+  return { token, contract: contractRead ? contract : null, holders, curve, origins };
 }
 
 /** DAS `mint_extensions` 的 snake_case key → 我们的扩展名 */
@@ -764,11 +805,26 @@ export interface MintActivityResult {
   poolCandidates: string[];
   creator?: string;
   createdSec?: number;
+  /**
+   * 最早的若干笔成交的付款方（不含 creator）。
+   *
+   * 这是「狙击仓位」的唯一来源：只有真的取到最早成交，才能说谁是狙击；
+   * 取不到时这里是空数组，调用方必须当作「未知」而不是「没有狙击」。
+   */
+  earlyBuyers: string[];
   origin: FieldOrigin;
 }
 
 /** 同一 mint 的成交分析结果缓存，避免 fetchMintActivity 与 fetchDeveloper 重复拉取 */
 const activityCache = new Map<string, { act: TxActivity; createdAtSec?: number }>();
+
+/**
+ * 「狙击」取样窗口：最早的这么多笔成交。
+ *
+ * 为什么不用「第一笔」：creator 的创建交易占掉第一笔，
+ * 真正的首区块买家在第 2 笔之后；实测取 1 笔会把狙击窗口整个丢掉。
+ */
+const EARLY_TX_LIMIT = 25;
 
 /**
  * 用真实成交推导市场指标，补充/替代 DexScreener。
@@ -783,26 +839,29 @@ export async function fetchMintActivity(
 ): Promise<MintActivityResult> {
   const liquidity: Partial<LiquidityInfo> = {};
   const poolCandidates: string[] = [];
+  const earlyBuyers: string[] = [];
 
   if (!hasEnhancedApi()) {
     return {
       liquidity,
       poolCandidates,
+      earlyBuyers,
       origin: 'unavailable',
     };
   }
 
-  // 最近成交（买卖结构）+ 最早一笔（部署者、发币时间）并行
+  // 最近成交（买卖结构）+ 最早若干笔（部署者、发币时间、狙击窗口）并行
   const [recentRes, oldestRes] = await Promise.allSettled([
     enhancedTxs(mint, { limit: 100, sortOrder: 'desc' }),
-    enhancedTxs(mint, { limit: 1, sortOrder: 'asc' }),
+    enhancedTxs(mint, { limit: EARLY_TX_LIMIT, sortOrder: 'asc' }),
   ]);
 
   let creator: string | undefined;
   let createdSec: number | undefined;
 
   if (oldestRes.status === 'fulfilled') {
-    const tx = oldestRes.value[0];
+    const txs = oldestRes.value;
+    const tx = txs[0];
     createdSec = tx?.timestamp;
     // ⚠️ 部署者 = 创建交易的 fee payer。
     // 真实 pump.fun 代币的 DAS creators 是空的，metadata 指望不上。
@@ -814,6 +873,12 @@ export async function fetchMintActivity(
           '可能是首个买家而非发币人，请人工确认。',
         );
       }
+    }
+    // 狙击窗口：最早若干笔的付款方（排除 creator 自买与失败交易）
+    for (const t of txs) {
+      if (t.transactionError) continue;
+      if (!t.feePayer || t.feePayer === creator) continue;
+      earlyBuyers.push(t.feePayer);
     }
   } else {
     warnings.push(`拉取最早交易失败：${msg(oldestRes.reason)}（无法确定部署者与发币时间）`);
@@ -844,7 +909,7 @@ export async function fetchMintActivity(
     warnings.push(`拉取成交明细失败：${msg(recentRes.reason)}`);
   }
 
-  return { liquidity, poolCandidates, creator, createdSec, origin };
+  return { liquidity, poolCandidates, creator, createdSec, earlyBuyers, origin };
 }
 
 // ── 开发者履历 ──────────────────────────────────────────────────────
