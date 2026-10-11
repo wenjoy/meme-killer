@@ -115,6 +115,37 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
   // 净流入是 SOL 口径的概念：USD 推算值喂进来会得到一个假数字
   const netInflow = solKnown ? (buyVolSol ?? 0) - (sellVolSol ?? 0) : undefined;
 
+  // ── 逐笔量级证据 ────────────────────────────────────────────────
+  // 「笔数 4.6 倍、金额 81%」这种话读者没法核对。必须给出单笔量级与卖单集中度，
+  // 才能看出「小额买盘撑笔数、大额卖盘出货」是真结论还是错觉。
+  const audit = l.tradeSizeAudit;
+  const avgBuySol = buyCount > 0 ? buyVol / buyCount : undefined;
+  const avgSellSol = sellCount > 0 ? sellVol / sellCount : undefined;
+  const windowText =
+    audit?.windowSec === undefined
+      ? ''
+      : audit.windowSec >= 3600
+        ? `，跨约 ${(audit.windowSec / 3600).toFixed(1)} 小时`
+        : `，跨约 ${Math.max(1, Math.round(audit.windowSec / 60))} 分钟`;
+  // 单位是 SOL 才谈单笔量级：USD 口径的单笔金额受价格波动影响，说不清「多大算大」
+  const sizeEvidence =
+    audit && avgBuySol !== undefined && avgSellSol !== undefined && volUnit === 'SOL'
+      ? `样本：最近 ${audit.trades} 笔可判定方向的成交${windowText}。` +
+        `买单 ${buyCount} 笔共 ${buyVol.toFixed(3)} SOL（平均 ${avgBuySol.toFixed(4)}、中位 ${audit.buyMedianSol.toFixed(4)}），` +
+        `卖单 ${sellCount} 笔共 ${sellVol.toFixed(3)} SOL（平均 ${avgSellSol.toFixed(4)}、中位 ${audit.sellMedianSol.toFixed(4)}，` +
+        `平均是买单的 ${(avgSellSol / Math.max(avgBuySol, 1e-9)).toFixed(1)} 倍）。` +
+        (audit.sellMaxSol > 0
+          ? `最大单笔卖单 ${audit.sellMaxSol.toFixed(3)} SOL` +
+            (audit.largestSellSharePct !== undefined
+              ? `，占卖出总额 ${audit.largestSellSharePct.toFixed(1)}%`
+              : '') +
+            (audit.top5SellSharePct !== undefined
+              ? `；前 5 大卖单合计占 ${audit.top5SellSharePct.toFixed(1)}%`
+              : '') +
+            '。'
+          : '')
+      : '';
+
   if (totalVol > 0) {
     const sellShare = (sellVol / totalVol) * 100;
     const countShare = totalCount > 0 ? (sellCount / totalCount) * 100 : 100;
@@ -136,7 +167,8 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
         `卖方金额占比 ${sellShare.toFixed(1)}%` +
           (netInflow !== undefined
             ? `，净流入 ${netInflow.toFixed(2)} SOL。`
-            : `（金额为 ${volUnit} 口径，无法换算净流入）。`),
+            : `（金额为 ${volUnit} 口径，无法换算净流入）。`) +
+          (sizeEvidence ? sizeEvidence : ''),
       );
     } else if (netInflow !== undefined && netInflow > 0 && countShare >= 5) {
       add(
@@ -178,7 +210,12 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
         'high',
         '笔数与金额背离',
         `买单笔数是卖单 ${countRatio.toFixed(1)} 倍，但买入金额只有卖出的 ${(volRatio * 100).toFixed(0)}%。` +
-          '小额买盘撑笔数、大额卖盘出货。',
+          '小额买盘撑笔数、大额卖盘出货。' +
+          (sizeEvidence
+            ? sizeEvidence
+            : volUnit === 'SOL'
+              ? ''
+              : `（金额为 ${volUnit} 口径，拿不到单笔 SOL 量级，无法进一步核对。）`),
       );
     }
   }
@@ -200,6 +237,17 @@ export function analyzeLiquidity(data: ScanInput): DimensionResult {
       ...(totalVol > 0 ? { sellSharePct: (sellVol / totalVol) * 100 } : {}),
       ...(netInflow !== undefined ? { netInflowSol: netInflow } : {}),
       ...(totalCount > 0 ? { totalTrades: totalCount } : {}),
+      ...(buyCount > 0 && sellCount > 0 ? { buyTrades: buyCount, sellTrades: sellCount } : {}),
+      ...(audit && avgBuySol !== undefined && avgSellSol !== undefined && volUnit === 'SOL'
+        ? {
+            avgBuySol: Math.round(avgBuySol * 1e6) / 1e6,
+            avgSellSol: Math.round(avgSellSol * 1e6) / 1e6,
+            sellMaxSol: audit.sellMaxSol,
+          }
+        : {}),
+      ...(audit?.windowSec !== undefined
+        ? { sampleWindowMin: Math.max(1, Math.round(audit.windowSec / 60)) }
+        : {}),
       ...(sniperPct !== undefined ? { sniperHoldPct: sniperPct } : {}),
       ...(l.holderCount !== undefined ? { holderCount: l.holderCount } : {}),
       ...(l.liquidityUsd !== undefined ? { liquidityUsd: l.liquidityUsd } : {}),

@@ -956,3 +956,45 @@ test('有销毁比例但没有持有者明细 → 只报「持有人无法核实
   assert.equal(f.severity, 'medium');
   assert.ok(f.detail.includes('62.9%') && f.detail.includes('LPMintUnknown'));
 });
+
+test('「笔数与金额背离」必须给出单笔量级证据，不能只给两个比例', () => {
+  // 真实数据：9raUVuze…pump 的最近 100 笔 → 买 64 笔 1.847 SOL、卖 14 笔 2.285 SOL，
+  // 最大一笔卖单 2.028 SOL（占卖出 88.8%），样本跨 65 小时。
+  const r = analyzeLiquidity(
+    input({
+      liquidity: {
+        buyCount: 64,
+        sellCount: 14,
+        buyVolumeSol: 1.847,
+        sellVolumeSol: 2.285,
+        tradeSizeAudit: {
+          trades: 78,
+          windowSec: 3925 * 60,
+          buyMedianSol: 0.0025,
+          sellMedianSol: 0.0113,
+          buyMaxSol: 0.275,
+          sellMaxSol: 2.028,
+          largestSellSharePct: 88.8,
+          top5SellSharePct: 97.5,
+        },
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '笔数与金额背离')!;
+  assert.ok(f, '笔数/金额背离仍要判出来');
+  // 读者要能自己核对：样本量、时间窗、单笔中位/平均、卖单集中度
+  assert.ok(f.detail.includes('78 笔'), '要给样本笔数');
+  assert.ok(f.detail.includes('65.4 小时'), '要说明样本跨多久，否则 100 笔可能只是一瞬间');
+  assert.ok(f.detail.includes('0.0025'), '要给买单中位数（小额买盘的直接证据）');
+  assert.ok(f.detail.includes('0.0113'), '要给卖单中位数');
+  assert.ok(f.detail.includes('2.028'), '要给最大单笔卖单');
+  assert.ok(f.detail.includes('88.8%'), '要给出最大卖单占卖出总额的比例');
+  assert.ok(f.detail.includes('97.5%'), '要给出前 5 大卖单占比');
+  // 指标面板同样要有这几个数
+  assert.equal((r.metrics ?? {}).buyTrades, 64);
+  assert.equal((r.metrics ?? {}).sellTrades, 14);
+  assert.ok(Math.abs(Number((r.metrics ?? {}).avgBuySol) - 0.0289) < 0.001);
+  assert.ok(Math.abs(Number((r.metrics ?? {}).avgSellSol) - 0.1632) < 0.001);
+  assert.equal((r.metrics ?? {}).sellMaxSol, 2.028);
+  assert.equal((r.metrics ?? {}).sampleWindowMin, 3925);
+});

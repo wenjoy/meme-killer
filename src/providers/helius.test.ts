@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { PublicKey } from '@solana/web3.js';
 import {
   RetryableError,
+  buildTradeSizeAudit,
   isLikelyMint,
   parseJupiterLockEscrow,
   parseMintAccount,
@@ -289,4 +290,60 @@ test('Jupiter Lock：时间戳不合理时返回 null，绝不编一个日期出
   assert.equal(parseJupiterLockEscrow(Buffer.alloc(296)), null);
   // 长度不足
   assert.equal(parseJupiterLockEscrow(Buffer.alloc(100)), null);
+});
+
+// ── 逐笔量级证据（真实数据：9raUVuze…pump 的最近 100 笔）────────────
+test('逐笔量级证据：真实成交分布能算出「小额买盘撑笔数、大额卖盘出货」', () => {
+  // 实测数据：买单 64 笔共 1.847 SOL、卖单 14 笔共 2.285 SOL，
+  // 其中最大一笔卖单 2.028 SOL（占卖出总额 88.8%）。
+  const buys = [
+    ...Array.from({ length: 56 }, () => 0.0066), // 小额买盘
+    ...Array.from({ length: 8 }, () => 0.185), // 少数大额买盘
+  ];
+  const sells = [2.028, 0.108, 0.037, 0.029, 0.026, ...Array.from({ length: 9 }, () => 0.0064)];
+  const audit = buildTradeSizeAudit({
+    buyCount: buys.length,
+    sellCount: sells.length,
+    buySizesSol: buys,
+    sellSizesSol: sells,
+    sellVolumeSol: sells.reduce((s, x) => s + x, 0),
+    minTs: 1_700_000_000,
+    maxTs: 1_700_000_000 + 3925 * 60,
+  })!;
+
+  assert.equal(audit.trades, 78);
+  assert.equal(audit.windowSec, 3925 * 60, '样本跨度必须透出来：100 笔可能跨几天');
+  assert.ok(audit.sellMedianSol < audit.buyMedianSol * 5, `卖单中位数 ${audit.sellMedianSol}`);
+  assert.equal(audit.sellMaxSol, 2.028);
+  assert.ok(
+    (audit.largestSellSharePct ?? 0) > 80,
+    `最大一笔卖单应占卖出总额 80% 以上，实际 ${audit.largestSellSharePct}`,
+  );
+  assert.ok(
+    (audit.top5SellSharePct ?? 0) > (audit.largestSellSharePct ?? 0),
+    '前 5 大卖单占比必须 ≥ 最大单笔占比',
+  );
+});
+
+test('只有单边成交时不给量级证据（避免「卖单中位数 0」被读成卖单很小）', () => {
+  assert.equal(
+    buildTradeSizeAudit({
+      buyCount: 10,
+      sellCount: 0,
+      buySizesSol: [0.1, 0.2],
+      sellSizesSol: [],
+      sellVolumeSol: 0,
+    }),
+    undefined,
+  );
+  assert.equal(
+    buildTradeSizeAudit({
+      buyCount: 0,
+      sellCount: 3,
+      buySizesSol: [],
+      sellSizesSol: [1, 2, 3],
+      sellVolumeSol: 6,
+    }),
+    undefined,
+  );
 });

@@ -682,6 +682,12 @@ interface TxActivity {
   sellCount: number;
   buyVolumeSol: number;
   sellVolumeSol: number;
+  /** 每笔成交的 SOL 金额：用来给出「小额买盘 / 大额卖盘」的直观证据 */
+  buySizesSol: number[];
+  sellSizesSol: number[];
+  /** 样本时间范围（秒）—— 100 笔可能跨几分钟，也可能跨几天，必须让读者知道 */
+  minTs?: number;
+  maxTs?: number;
   /** 买单中交出代币的对手方 → 经验推断的池/金库地址 */
   poolCandidates: Map<string, number>;
   devSells: { ts?: number; amount: number }[];
@@ -735,13 +741,19 @@ function classifyTx(
 
   const ts = tx.timestamp;
   if (trader) acc.uniqueTraders.add(trader);
+  if (ts !== undefined) {
+    if (acc.minTs === undefined || ts < acc.minTs) acc.minTs = ts;
+    if (acc.maxTs === undefined || ts > acc.maxTs) acc.maxTs = ts;
+  }
 
   if (side === 'buy') {
     acc.buyCount++;
     acc.buyVolumeSol += sol;
+    acc.buySizesSol.push(sol);
   } else {
     acc.sellCount++;
     acc.sellVolumeSol += sol;
+    acc.sellSizesSol.push(sol);
   }
 
   // 经验推断池地址：买单里把代币交出来的对手方就是池/金库
@@ -800,6 +812,51 @@ function classifyTx(
   }
 }
 
+/**
+ * 逐笔量级证据：把「小额买盘 / 大额卖盘」变成读者能自己核对的中位数与集中度。
+ *
+ * 抽成纯函数是为了能用真实成交数据写回归测试 —— 这段逻辑直接决定报告里
+ * 「单笔平均 5.6 倍」「最大一笔卖单占卖出 88.8%」这类数字，算错比不写更糟。
+ *
+ * 两侧都有成交才算：只有买（或只有卖）时中位数会算出 0，会被读成
+ * 「卖单很小」，而真相是「没有卖单」。
+ */
+export function buildTradeSizeAudit(act: {
+  buyCount: number;
+  sellCount: number;
+  buySizesSol: number[];
+  sellSizesSol: number[];
+  sellVolumeSol: number;
+  minTs?: number;
+  maxTs?: number;
+}): LiquidityInfo['tradeSizeAudit'] | undefined {
+  if (act.buySizesSol.length === 0 || act.sellSizesSol.length === 0) return undefined;
+  const median = (xs: number[]) => {
+    const v = [...xs].sort((a, b) => a - b);
+    return v[Math.floor(v.length / 2)];
+  };
+  const round = (x: number) => Math.round(x * 1e6) / 1e6;
+  const sortedSells = [...act.sellSizesSol].sort((a, b) => b - a);
+  const top5 = sortedSells.slice(0, 5).reduce((sum, x) => sum + x, 0);
+  const sellTotal = act.sellVolumeSol;
+  return {
+    trades: act.buyCount + act.sellCount,
+    ...(act.minTs !== undefined && act.maxTs !== undefined && act.maxTs > act.minTs
+      ? { windowSec: act.maxTs - act.minTs }
+      : {}),
+    buyMedianSol: round(median(act.buySizesSol)),
+    sellMedianSol: round(median(act.sellSizesSol)),
+    buyMaxSol: round(Math.max(...act.buySizesSol)),
+    sellMaxSol: round(sortedSells[0]),
+    ...(sellTotal > 0
+      ? {
+          largestSellSharePct: (sortedSells[0] / sellTotal) * 100,
+          top5SellSharePct: (top5 / sellTotal) * 100,
+        }
+      : {}),
+  };
+}
+
 function analyzeTxs(
   txs: HeliusTx[],
   mint: string,
@@ -811,6 +868,8 @@ function analyzeTxs(
     sellCount: 0,
     buyVolumeSol: 0,
     sellVolumeSol: 0,
+    buySizesSol: [],
+    sellSizesSol: [],
     poolCandidates: new Map(),
     devSells: [],
     devBuys: 0,
@@ -921,6 +980,8 @@ export async function fetchMintActivity(
       liquidity.sellCount = act.sellCount;
       liquidity.buyVolumeSol = Math.round(act.buyVolumeSol * 1e4) / 1e4;
       liquidity.sellVolumeSol = Math.round(act.sellVolumeSol * 1e4) / 1e4;
+      const audit = buildTradeSizeAudit(act);
+      if (audit) liquidity.tradeSizeAudit = audit;
       origin = 'onchain';
     } else {
       warnings.push(

@@ -214,6 +214,30 @@ export interface LiquidityInfo {
    * （未知），不是 0。仅覆盖前 20 大持仓窗口，属于下限估计。
    */
   sniperHoldPct?: number;
+  /**
+   * 逐笔成交的「大单 / 小单」证据。
+   *
+   * 为什么需要它：`买单笔数是卖单 4.6 倍，但买入金额只有卖出的 81%` 这种结论
+   * 读者无法核对 —— 必须给出单笔量级（中位/最大）与卖单集中度，才能看出
+   * 「小额买盘撑笔数、大额卖盘出货」到底是不是真的。全部来自最近 100 笔中
+   * 能判定方向的成交，拿不到时为 undefined（不得当成 0）。
+   */
+  tradeSizeAudit?: {
+    /** 样本笔数（本次能判定买卖方向的成交） */
+    trades: number;
+    /** 样本覆盖的时间跨度（秒）—— 100 笔可能只跨几分钟，也可能跨几天 */
+    windowSec?: number;
+    /** 单笔买入的 SOL 中位数 */
+    buyMedianSol: number;
+    /** 单笔卖出的 SOL 中位数 */
+    sellMedianSol: number;
+    buyMaxSol: number;
+    sellMaxSol: number;
+    /** 最大单笔卖单占卖出总额的比例（%） */
+    largestSellSharePct?: number;
+    /** 前 5 大卖单占卖出总额的比例（%） */
+    top5SellSharePct?: number;
+  };
   /** 持有人总数（RugCheck `totalHolders`） */
   holderCount?: number;
   /** 池地址，用于持仓剔除 */

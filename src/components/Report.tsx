@@ -298,6 +298,33 @@ export function Report({ report }: { report: ScanReport }) {
                         <dt>卖单额</dt>
                         <dd className="text-ink-200">{num(m.sellSharePct)}%</dd>
                       </div>
+                      {m.buyTrades !== undefined && (
+                        <div className="flex justify-between">
+                          <dt>买/卖笔数</dt>
+                          <dd className="text-ink-200">
+                            {num(m.buyTrades)} / {num(m.sellTrades)}
+                            {m.sampleWindowMin !== undefined && (
+                              <span className="ml-1 text-[10px] text-ink-500">
+                                （样本跨 {num(m.sampleWindowMin)} 分钟）
+                              </span>
+                            )}
+                          </dd>
+                        </div>
+                      )}
+                      {m.avgBuySol !== undefined && (
+                        <div className="flex justify-between">
+                          <dt>平均单笔 买/卖</dt>
+                          <dd className="text-ink-200" title="单笔成交额均值，用来核对「小额买盘撑笔数、大额卖盘出货」">
+                            {num(m.avgBuySol)} / {num(m.avgSellSol)} SOL
+                          </dd>
+                        </div>
+                      )}
+                      {m.sellMaxSol !== undefined && (
+                        <div className="flex justify-between">
+                          <dt>最大单笔卖单</dt>
+                          <dd className="text-ink-200">{num(m.sellMaxSol)} SOL</dd>
+                        </div>
+                      )}
                       <div className="flex justify-between">
                         <dt>持有人</dt>
                         <dd className="text-ink-200">{num(m.holderCount)}</dd>
