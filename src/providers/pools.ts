@@ -78,6 +78,16 @@ export interface BondingCurveState {
   complete: boolean;
   /** 曲线内真实 SOL（仅未毕业时有意义） */
   realSolReserves: number;
+  /**
+   * 程序状态里记录的 creator（第 49..81 字节）。
+   *
+   * 这是**比「创建交易的 fee payer」更权威**的部署者来源：它是 pump.fun 程序
+   * 自己写的字段（creator fee 收款方），而且事后可被 `set_creator` 改写。
+   * 实测同一个代币上二者会不一致（用打包器发币、再把 creator 转给真 dev），
+   * 所以必须把两者都取出来对照，而不是默认 fee payer 就是 dev。
+   * 账户太短（旧版本）时为 undefined。
+   */
+  creator?: string;
 }
 
 /**
@@ -102,9 +112,20 @@ export function decodeBondingCurve(owner: string, data: Buffer | Uint8Array): Bo
   if (data.length < 49) return null;
   const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
   if (!buf.subarray(0, 8).equals(BONDING_CURVE_DISCRIMINATOR)) return null;
+  // 旧版本 curve 账户只有 81 字节前缀的一部分；不足 81 字节就没有 creator 字段，
+  // 此时宁可返回 undefined，也不要用越界/错位的字节编一个地址出来。
+  let creator: string | undefined;
+  if (buf.length >= 81) {
+    try {
+      creator = new PublicKey(buf.subarray(49, 81)).toBase58();
+    } catch {
+      creator = undefined;
+    }
+  }
   return {
     complete: buf[48] === 1,
     realSolReserves: Number(buf.readBigUInt64LE(32)) / 1e9,
+    ...(creator ? { creator } : {}),
   };
 }
 

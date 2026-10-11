@@ -208,6 +208,11 @@ export function mapRugCheckReport(
     const holders = [...(lp.holders ?? [])]
       .filter((h) => typeof h.owner === 'string')
       .sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0));
+    // 全量（≤20）交给上层：用它核对「解析后的 creator 持有多少 LP」，
+    // 只看前 3 名会漏掉「creator 是第 4 大持有者」的情况。
+    if (holders.length > 0) {
+      lpInfo.lpAllHolders = holders.map((h) => ({ owner: h.owner!, pct: h.pct ?? 0 }));
+    }
     const top = holders[0];
     if (top && (top.pct ?? 0) >= LOCKED_PCT && BURN_ADDRESSES.has(top.owner!)) {
       // LP 凭证在销毁地址里 —— 这比任何「锁定」都更硬

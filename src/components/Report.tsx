@@ -339,6 +339,26 @@ export function Report({ report }: { report: ScanReport }) {
                   )}
                   {key === 'developer' && (
                     <>
+                      {m.creatorSource !== undefined && (
+                        <div className="flex justify-between">
+                          <dt>部署者来源</dt>
+                          <dd className="text-ink-200" title={String(m.creator ?? '')}>
+                            {m.creatorSource === 'curve'
+                              ? '曲线程序状态'
+                              : m.creatorSource === 'metadata'
+                                ? 'metadata creators'
+                                : '创建交易付款方（推断值）'}
+                          </dd>
+                        </div>
+                      )}
+                      {m.launchWallet !== undefined && (
+                        <div className="flex justify-between">
+                          <dt>创建钱包</dt>
+                          <dd className="font-mono text-warn" title={`与 creator ${String(m.creator ?? '')} 不是同一个地址`}>
+                            {shortAddr(String(m.launchWallet))}
+                          </dd>
+                        </div>
+                      )}
                       <div className="flex justify-between">
                         <dt>历史发币</dt>
                         <dd className="text-ink-200" title="只统计发币数量；这些代币的结局（是否 rug）本工具不回溯，因此不判定">

@@ -51,6 +51,42 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
 
   const priorTokens = d.priorTokens ?? [];
 
+  // ── 部署者身份本身要交代清楚 ────────────────────────────────────
+  // 实测同一个代币上「创建交易付款方」与「程序记录的 creator」可以完全不同
+  // （打包器发币、再把 creator 转给真 dev）。此时下面所有 dev 结论说的是
+  // **creator**，不是那个付款的钱包 —— 不说清楚读者会追错人。
+  const SOURCE_LABEL: Record<string, string> = {
+    curve: 'pump.fun 曲线程序状态里的 creator 字段（最权威）',
+    metadata: '链上 Metaplex metadata 的 creators[0]',
+    'create-tx': '创建交易的付款方（**推断值**：打包器发币时这不是真 dev）',
+  };
+  if (!d.creator) {
+    add(
+      'medium',
+      '部署者身份未知',
+      '三级来源（curve 程序状态、metadata、创建交易）都没能确定 creator，' +
+        '开发者维度的结论无法归属到任何具体地址。',
+    );
+  } else if (d.creatorSource === 'create-tx') {
+    // 只能从付款方推断 = 可能追错人，必须说清楚这是推断值
+    add(
+      'medium',
+      '部署者身份为推断值',
+      `读不到 pump.fun 曲线或 metadata 里的 creator，只能取创建交易的付款方 \`${d.creator}\`` +
+        '作为部署者 —— 用打包器/launchpad 发币时，这个地址是代付手续费的钱包，不是真正的 dev。' +
+        '下面的 dev 买卖结论请按此折价看待。',
+    );
+  } else if (d.launchWallet) {
+    // 有权威来源、但创建钱包是另一个地址：这是**披露**，不是风险
+    add(
+      'low',
+      '创建钱包与 creator 不是同一个地址',
+      `本报告的开发者维度按 creator \`${d.creator}\` 计算（来源：${SOURCE_LABEL[d.creatorSource ?? ''] ?? d.creatorSource}）；` +
+        `而创建交易的付款方是 \`${d.launchWallet}\` —— 付费发币的钱包不一定是 dev` +
+        '（打包器/launchpad 发币、再把 creator 转给真 dev 很常见），两者不要混为一谈。',
+    );
+  }
+
   // ── 历史发币 ────────────────────────────────────────────────────
   //
   // ⚠️ 这里曾经输出过一条**没有根据的利好**：`priorRugCount ?? priorTokens
@@ -139,6 +175,9 @@ export function analyzeDeveloper(data: ScanInput): DimensionResult {
     findings,
     metrics: {
       priorTokenCount: priorTokens.length,
+      ...(d.creator ? { creator: d.creator } : {}),
+      ...(d.creatorSource ? { creatorSource: d.creatorSource } : {}),
+      ...(d.launchWallet ? { launchWallet: d.launchWallet } : {}),
       ...(d.tokensLast7d !== undefined ? { tokensLast7d: d.tokensLast7d } : {}),
       ...(d.devSoldRatio !== undefined ? { devSoldRatio: soldRatio } : {}),
       ...(d.devHoldingPct !== undefined ? { devHoldingPct: d.devHoldingPct } : {}),

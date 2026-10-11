@@ -14,17 +14,27 @@
  */
 import { THRESHOLDS } from '@/core/constants';
 import { scan } from '@/core/engine';
-import type { FieldOrigin, LiquidityInfo, RawHolder, ScanInput, ScanMeta, ScanReport } from '@/core/types';
+import type {
+  DeveloperInfo,
+  FieldOrigin,
+  LiquidityInfo,
+  RawHolder,
+  ScanInput,
+  ScanMeta,
+  ScanReport,
+} from '@/core/types';
 import { fetchDexScreener } from './dexscreener';
 import {
   fetchDeveloper,
   fetchLpMintSupply,
+  fetchMetadataCreators,
   fetchMintActivity,
   fetchOnChain,
   hasEnhancedApi,
   isLikelyMint,
   rpcUrl,
 } from './helius';
+import { resolveCreator } from './creator';
 import { resolvePoolAddresses } from './pools';
 import { fetchRugCheck, type RugCheckResult } from './rugcheck';
 
@@ -43,8 +53,13 @@ export function mergeInputs(parts: {
   rug: RugCheckResult;
   warnings: string[];
   origins: Record<string, FieldOrigin>;
+  /** 三级解析后的部署者（providers/creator.ts），用于把 dev 本人剔出狙击仓位 */
+  creator?: string;
+  /** 创建交易的付款方，与 creator 不同时才有值 */
+  launchWallet?: string;
 }): ScanInput {
-  const { mint, onchain, activity, developer, dex, rug, warnings, origins } = parts;
+  const { mint, onchain, activity, developer, dex, rug, warnings, origins, creator, launchWallet } =
+    parts;
 
   const token = {
     ...onchain.token,
@@ -80,7 +95,13 @@ export function mergeInputs(parts: {
     pools.addresses.has(h.address) || (h.tokenAccount ? pools.addresses.has(h.tokenAccount) : false);
 
   // 狙击仓位：最早若干笔成交的买家 ∩ 当前前 20 大持仓（推算，非链上事实）
-  const earlyBuyers = new Set(activity.earlyBuyers);
+  //
+  // ⚠️ 要把**部署者本人**从「狙击手」里剔除：dev 的开盘自买不是狙击仓位。
+  // 这里剔除两个地址：解析出的 creator（curve 状态）与创建交易付款方 ——
+  // 后者在 provider 那层已按「最早一笔的付款方」剔过一次，但最早一笔未必是创建交易。
+  const earlyBuyers = new Set(
+    activity.earlyBuyers.filter((a) => a !== creator && a !== launchWallet),
+  );
   const holders = onchain.holders.map((h) => {
     let out = h;
     if (isPoolHolder(h)) {
@@ -95,10 +116,10 @@ export function mergeInputs(parts: {
   });
 
   const sniperPct = holders.filter((h) => h.isSniper).reduce((s, h) => s + (h.pct ?? 0), 0);
-  if (activity.earlyBuyers.length > 0) {
+  if (earlyBuyers.size > 0) {
     warnings.push(
       `狙击仓位为推算值：取代币最早 ${THRESHOLDS.liquidity.sniperWindowTrades} 笔成交，` +
-        `排除 creator 后剩 ${activity.earlyBuyers.length} 个付款方，与当前前 20 大持仓求交集` +
+        `排除部署者相关地址后剩 ${earlyBuyers.size} 个付款方，与当前前 20 大持仓求交集` +
         '（链上只返回前 20），因此只是下限，不是全量。',
     );
   }
@@ -128,9 +149,9 @@ export function mergeInputs(parts: {
     // RugCheck 看到 AMM 市场 = 已经不在曲线上（真实信号，不是推断）
     ...(rug.hasAmmMarket ? { graduated: true, complete: true } : {}),
     ...curveLiquidity,
-    ...(activity.earlyBuyers.length > 0
-      ? { sniperHoldPct: Math.round(sniperPct * 100) / 100 }
-      : {}),
+    // ⚠️ 用**过滤后**的名单判断「有没有样本」：如果最早那批人全是部署者自己，
+    // 那就没有狙击样本可用，此时必须留空（未知），不能写 0 假装「没有狙击仓位」。
+    ...(earlyBuyers.size > 0 ? { sniperHoldPct: Math.round(sniperPct * 100) / 100 } : {}),
     poolAddresses,
   };
 
@@ -245,8 +266,28 @@ export async function collectAndScan(
   for (const w of rug.warnings) warnings.push(w);
   if (dex.warning) warnings.push(dex.warning);
 
-  // 开发者履历依赖 activity 解析出的 creator，必须串行
-  const developer = await fetchDeveloper(mint, activity.creator, warnings);
+  // ── 部署者：三级来源，从最权威往下回退（顺序见 providers/creator.ts）──
+  const curveCreator = onchain.curve?.exists === true ? onchain.curve.creator : undefined;
+  const metadataCreators = await fetchMetadataCreators(mint);
+  const launchWallet = activity.creator;
+  const resolved = resolveCreator({
+    curveCreator,
+    metadataCreator: metadataCreators?.[0]?.address,
+    launchWallet,
+  });
+  const creator = resolved.creator;
+  for (const w of resolved.warnings) warnings.push(w);
+
+  // 开发者履历依赖解析后的 creator，必须串行
+  const developer = await fetchDeveloper(mint, creator, warnings);
+  if (developer.developer || creator) {
+    developer.developer = {
+      ...(developer.developer ?? {}),
+      ...(creator ? { creator } : {}),
+      ...(resolved.source ? { creatorSource: resolved.source } : {}),
+      ...(resolved.launchWallet ? { launchWallet: resolved.launchWallet } : {}),
+    };
+  }
   warnings.push(...developer.warnings);
   origins.developer = developer.origin;
 
@@ -255,7 +296,18 @@ export async function collectAndScan(
     '社交热度数据源未接入（Helius 不提供社交数据，需 X/TG 第三方服务）。该维度标记为未采集，不计入评分。',
   );
 
-  const input = mergeInputs({ mint, onchain, activity, developer, dex, rug, warnings, origins });
+  const input = mergeInputs({
+    mint,
+    onchain,
+    activity,
+    developer,
+    dex,
+    rug,
+    warnings,
+    origins,
+    ...(creator ? { creator } : {}),
+    ...(resolved.launchWallet ? { launchWallet: resolved.launchWallet } : {}),
+  });
   const report = scan(input);
   report.meta.elapsedMs = Date.now() - started;
   return report;

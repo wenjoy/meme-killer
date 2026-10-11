@@ -403,7 +403,9 @@ export interface OnChainResult {
    * - `exists: false` 账户不存在：既可能是已毕业且被回收，也可能不是
    *   pump.fun 代币，**不能反推毕业**
    */
-  curve?: { exists: true; complete: boolean; realSolReserves: number } | { exists: false };
+  curve?:
+    | { exists: true; complete: boolean; realSolReserves: number; creator?: string }
+    | { exists: false };
   origins: Record<string, FieldOrigin>;
 }
 
@@ -938,7 +940,18 @@ export interface MintActivityResult {
 }
 
 /** 同一 mint 的成交分析结果缓存，避免 fetchMintActivity 与 fetchDeveloper 重复拉取 */
-const activityCache = new Map<string, { act: TxActivity; createdAtSec?: number }>();
+const activityCache = new Map<
+  string,
+  {
+    act: TxActivity;
+    createdAtSec?: number;
+    /** 原始成交：creator 解析结果与这里算 dev 行为时用的地址不一致时要重算 */
+    txs: HeliusTx[];
+    decimals: number;
+    /** 这批 dev 行为是按哪个地址算的 */
+    creatorUsed?: string;
+  }
+>();
 
 /**
  * 「狙击」取样窗口：最早的这么多笔成交。
@@ -988,14 +1001,15 @@ export async function fetchMintActivity(
     const txs = oldestRes.value;
     const tx = txs[0];
     createdSec = tx?.timestamp;
-    // ⚠️ 部署者 = 创建交易的 fee payer。
-    // 真实 pump.fun 代币的 DAS creators 是空的，metadata 指望不上。
+    // 这一层只是**候选** creator：真正的部署者由 providers/creator.ts 三级解析
+    // （curve 程序状态 → metadata → 这里的创建交易付款方）。实测 pump.fun 代币的
+    // DAS 与链上 metadata creators 都是空的，所以 curve 那一级才是主来源。
     if (tx?.feePayer) {
       creator = tx.feePayer;
       if (tx.type !== 'CREATE' && tx.type !== 'TOKEN_MINT') {
         warnings.push(
-          '最早一笔交易不是创建交易，部署者身份取自该笔的 fee payer，' +
-          '可能是首个买家而非发币人，请人工确认。',
+          '最早一笔交易不是创建交易（可能是索引缺口或创建前的转账）：' +
+            '该笔的付款方只能作为部署者的**兜底候选**，发币时间也只能作参考。',
         );
       }
     }
@@ -1018,7 +1032,13 @@ export async function fetchMintActivity(
   if (recentRes.status === 'fulfilled') {
     const txs = recentRes.value;
     const act = analyzeTxs(txs, mint, creator, decimals);
-    activityCache.set(mint, { act, createdAtSec: createdSec });
+    activityCache.set(mint, {
+      act,
+      createdAtSec: createdSec,
+      txs,
+      decimals,
+      ...(creator ? { creatorUsed: creator } : {}),
+    });
 
     if (act.buyCount + act.sellCount > 0) {
       liquidity.buyCount = act.buyCount;
@@ -1052,6 +1072,69 @@ export async function fetchMintActivity(
 }
 
 // ── 开发者履历 ──────────────────────────────────────────────────────
+
+/** Metaplex Token Metadata 程序（经典版，pump.fun 与多数发行平台都用它） */
+export const MPL_TOKEN_METADATA_PROGRAM = 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s';
+
+/**
+ * 读 Metaplex metadata 账户里的 `creators`（链上账户，不是 DAS）。
+ *
+ * 为什么还要读它：README 里写着「部署者优先取 metadata creators」，而
+ * **DAS 的 creators 对 pump.fun 代币是空的**容易让人以为 metadata 没用 ——
+ * 其实要读的是链上 metadata 账户本身。实测结论：
+ *   - pump.fun 代币的链上 metadata creators **也是空的**（9raUVuze…pump 实测为空），
+ *     所以 pump.fun 走 bonding curve 的程序状态字段；
+ *   - 这条路径保留给别的发行平台（它们的 metadata 里确实写着 creators）。
+ * 读不到（没有经典 metadata 账户 / 解析失败 / creators 为空）一律返回 undefined。
+ */
+export async function fetchMetadataCreators(
+  mint: string,
+): Promise<{ address: string; verified: boolean; share: number }[] | undefined> {
+  try {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from('metadata'),
+        new PublicKey(MPL_TOKEN_METADATA_PROGRAM).toBuffer(),
+        new PublicKey(mint).toBuffer(),
+      ],
+      new PublicKey(MPL_TOKEN_METADATA_PROGRAM),
+    );
+    const conn = new Connection(rpcUrl(), {
+      commitment: 'confirmed',
+      fetch: timedFetch(RPC_TIMEOUT_MS),
+    });
+    const info = await conn.getAccountInfo(pda);
+    if (!info || info.data.length < 100) return undefined;
+    const d = Buffer.from(info.data);
+    // 布局：key(1) + updateAuthority(32) + mint(32) + name/symbol/uri(Borsh string)
+    //       + sellerFeeBasisPoints(u16) + creators: Option<Vec<Creator>>
+    // ⚠️ 这里是**链上原始账户布局**，不是 DAS 的 JSON；偏移写错会读出乱码地址。
+    if (d[0] !== 4) return undefined; // 4 = MetadataV1
+    let o = 65;
+    for (let i = 0; i < 3; i++) {
+      if (o + 4 > d.length) return undefined;
+      const len = d.readUInt32LE(o);
+      o += 4 + len;
+    }
+    o += 2; // seller_fee_basis_points
+    if (o >= d.length || d[o] !== 1) return undefined; // Option 为 None
+    o += 1;
+    const count = d.readUInt32LE(o);
+    o += 4;
+    const out: { address: string; verified: boolean; share: number }[] = [];
+    for (let i = 0; i < count; i++) {
+      if (o + 34 > d.length) break;
+      const address = new PublicKey(d.subarray(o, o + 32)).toBase58();
+      o += 32;
+      const verified = d[o++] === 1;
+      const share = d[o++];
+      out.push({ address, verified, share });
+    }
+    return out.length > 0 ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface DeveloperResult {
   developer: DeveloperInfo | null;
@@ -1105,10 +1188,16 @@ export async function fetchDeveloper(
   // 余额是事实，流水只是推断，所以必须查余额。
   const balanceRes = await Promise.allSettled([fetchOwnerTokenBalance(creator, mint)]);
 
-  // 复用 fetchMintActivity 已经算好的本代币 dev 行为
+  // 复用 fetchMintActivity 已经算好的本代币 dev 行为。
+  // ⚠️ 传进来的 creator 可能与成交分析时用的那个不同（curve 程序状态优先），
+  // 那时必须按新地址重算 —— 否则「dev 卖出比例」算的是另一个钱包的行为。
   const cached = activityCache.get(mint);
   if (cached) {
-    const { act, createdAtSec } = cached;
+    const act =
+      cached.creatorUsed === creator
+        ? cached.act
+        : analyzeTxs(cached.txs, mint, creator, cached.decimals);
+    const { createdAtSec } = cached;
     const sold = act.devSells.reduce((s, x) => s + x.amount, 0);
     if (act.devBuys > 0) {
       dev.devSoldRatio = Math.min(1, sold / act.devBuys);

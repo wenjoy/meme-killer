@@ -154,10 +154,21 @@ export interface ContractInfo {
      */
     topCirculatingHolderPct?: number;
     /**
-     * 项目方（RugCheck 标注 CREATOR 的地址）持有流通 LP 的份额（%）。
+     * 项目方（**解析后的 creator**）持有流通 LP 的份额（%）。
      * 只有这个数是撤池跑路的直接风险；第三方各自添加的流动性不是。
+     *
+     * ⚠️ 分母是流通量。这个数在 merge 阶段按三级来源解析出的 creator 重算，
+     * 不再用 RugCheck 的 `knownAccounts` 标签 —— 实测那个标签会指向
+     * 创建指令的另一个账户（`TSLvdd1p…`），而不是真正的 dev。
      */
     creatorLpPct?: number;
+    /**
+     * 链上 LP mint 的持有者全量（RugCheck 最多给 20 条）。
+     *
+     * 给它是为了能用**解析后的 creator 地址**去核对该地址持有多少 LP ——
+     * 只暴露前 3 名的 `lpHolders` 会漏掉「creator 是第 4 大 LP 持有者」这种情况。
+     */
+    lpAllHolders?: { owner: string; pct: number }[];
     /**
      * LP 凭证的持有者明细（RugCheck 按链上 LP mint 余额给出，最多取前 3）。
      *
@@ -261,6 +272,25 @@ export interface LiquidityInfo {
 
 export interface DeveloperInfo {
   creator?: string;
+  /**
+   * `creator` 这个地址是从哪一级来源取的（后面是前面取不到时的回退）：
+   *
+   * 1. `curve`     pump.fun bonding curve **程序状态**里的 creator 字段（第 49..81 字节）
+   *                —— 最权威：程序自己写的，也是 creator fee 的收款方
+   * 2. `metadata`  链上 Metaplex metadata 的 `creators[0]`（非 pump.fun 平台常见）
+   * 3. `create-tx` 创建交易的付款方 —— **推断值**，打包器/launchpad 发币时会指错人
+   *
+   * 实测：pump.fun 代币的 metadata creators 是空的，所以正常走 `curve`。
+   */
+  creatorSource?: 'curve' | 'metadata' | 'create-tx';
+  /**
+   * 创建交易的付款方（launch wallet）。
+   *
+   * 与 `creator` 不一致时**必须在报告里说明**：用打包器发币、再把 creator
+   * 转给真 dev 是常见做法，此时这两个地址代表完全不同的主体，
+   * 把 launch wallet 当 dev 会让整个开发者维度追错人。
+   */
+  launchWallet?: string;
   /**
    * 该 creator 历史发行过的其它代币。
    *

@@ -1165,3 +1165,110 @@ test('没取到最早成交时不得说「不在最早 25 笔内」（那是把�
   assert.ok(g.detail.includes('没有一笔来自开盘最早 25 笔成交内的地址'));
   assert.equal((known.metrics ?? {}).earlyBuyerWindowKnown, 1);
 });
+
+// ── 部署者身份的来源与「关联钱包持有 LP」 ──────────────────────────
+test('只能从创建交易付款方推断 creator → 必须标为推断值，不能当作确定身份', () => {
+  const r = analyzeDeveloper(
+    input({
+      developer: { creator: 'FeePayer111111111111111111111111111111111', creatorSource: 'create-tx' },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '部署者身份为推断值')!;
+  assert.ok(f, '用付款方推断身份必须出结论，否则读者会以为追对了人');
+  assert.equal(f.severity, 'medium');
+  assert.ok(f.detail.includes('不是真正的 dev'), '要说清付款方为什么可能是别人');
+});
+
+test('程序状态给的 creator 与创建钱包不一致 → 披露，且按 creator 算 dev 结论', () => {
+  const r = analyzeDeveloper(
+    input({
+      developer: {
+        creator: 'CurveCreator1111111111111111111111111111111',
+        creatorSource: 'curve',
+        launchWallet: 'LaunchWallet111111111111111111111111111111',
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '创建钱包与 creator 不是同一个地址')!;
+  assert.ok(f, '两个地址不同必须披露');
+  assert.ok(f.detail.includes('CurveCreator'), '要说清结论归给谁');
+  assert.ok(f.detail.includes('LaunchWallet'), '也要说清另一个地址是谁');
+  assert.equal((r.metrics ?? {}).creatorSource, 'curve');
+  assert.equal((r.metrics ?? {}).launchWallet, 'LaunchWallet111111111111111111111111111111');
+});
+
+test('部署者身份三级都拿不到 → 明确未知，不编地址', () => {
+  const r = analyzeDeveloper(input({ developer: { priorTokens: [] } }));
+  const f = r.findings.find((x) => x.title === '部署者身份未知')!;
+  assert.ok(f);
+  assert.ok(!(r.metrics ?? {}).creator, '未知时 metrics 不能有 creator');
+});
+
+test('关联钱包（创建付款方）持有流通 LP → 单独报警，不能只按 creator 算', () => {
+  // 实测 9raUVuze…pump：creator（曲线状态）持 0%，但创建钱包持有流通 LP 的 29.1%
+  const r = analyzeContract(
+    input({
+      developer: { creator: 'CurveCreator1111111111111111111111111111111', creatorSource: 'curve', launchWallet: 'LaunchWallet111111111111111111111111111111' },
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: {
+          exists: true,
+          burned: false,
+          burnedPct: 62.9,
+          creatorLpPct: 0,
+          circulatingHolderCount: 20,
+          topCirculatingHolderPct: 33.3,
+          lpAllHolders: [
+            { owner: 'LaunchWallet111111111111111111111111111111', pct: 10.8 },
+            { owner: 'OtherHolder111111111111111111111111111111111', pct: 8.9 },
+          ],
+        },
+      },
+    }),
+  );
+  const f = r.findings.find((x) => x.title === '与部署者关联的钱包持有流通中的 LP')!;
+  assert.ok(f, 'creator 持 0 不等于没人能撤池：创建钱包持有 29.1% 流通 LP 必须报出来');
+  assert.equal(f.severity, 'medium');
+  assert.ok(f.detail.includes('10.8%'), `要给出占全池的比例（门槛依据）：${f.detail}`);
+  assert.ok(f.detail.includes('29.1%'), '也要给出占流通部分的比例，方便和销毁比例对照');
+  const spread = r.findings.find((x) => x.title === '流通中的 LP 分散在多个地址');
+  assert.ok(spread && spread.detail.includes('不能一并算作'), '分散那条不能再把关联地址算成第三方流动性');
+});
+
+test('没有关联钱包时不得凭空出现「关联钱包持有 LP」', () => {
+  const r = analyzeContract(
+    input({
+      developer: { creator: 'CurveCreator1111111111111111111111111111111', creatorSource: 'curve' },
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: { exists: true, burned: true, burnedPct: 62.9, circulatingHolderCount: 20, lpAllHolders: [{ owner: 'SomeoneElse11111111111111111111111111111111', pct: 10 }] },
+      },
+    }),
+  );
+  assert.equal(r.findings.find((x) => x.title === '与部署者关联的钱包持有流通中的 LP'), undefined);
+});
+
+test('门槛卡在全池占比上：销毁 96% 的池子里拿住剩下那点 LP 不算警报', () => {
+  const r = analyzeContract(
+    input({
+      developer: { creator: 'CurveCreator1111111111111111111111111111111', creatorSource: 'curve', launchWallet: 'LaunchWallet111111111111111111111111111111' },
+      contract: {
+        mintAuthority: null,
+        freezeAuthority: null,
+        lp: {
+          exists: true,
+          burnedPct: 96,
+          circulatingHolderCount: 20,
+          lpAllHolders: [{ owner: 'LaunchWallet111111111111111111111111111111', pct: 3 }],
+        },
+      },
+    }),
+  );
+  assert.equal(
+    r.findings.find((x) => x.title === '与部署者关联的钱包持有流通中的 LP'),
+    undefined,
+    '只占全池 3% 时不能报成「关联钱包持有 LP」，那是把小数字放大成警报',
+  );
+});

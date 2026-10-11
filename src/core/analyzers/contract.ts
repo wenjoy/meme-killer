@@ -177,6 +177,24 @@ export function analyzeContract(data: ScanInput): DimensionResult {
     : '';
   const livePct = lp.burnedPct !== undefined ? Math.max(0, 100 - lp.burnedPct) : undefined;
 
+  // 与部署者**关联**的钱包持有多少流通 LP：创建交易的付款方、creator 首笔交易的出资方。
+  // 实测 `9raUVuze…pump`：创建钱包 4JBz4tAK… 持有历史 LP 的 10.8%（= 流通 LP 的 29%），
+  // 而按 creator（曲线状态里的 Fpi4NERk…）算它是 0% —— 只报 creator 会漏掉这个敞口。
+  const dev = data.developer ?? {};
+  const relatedWallets = new Set(
+    [dev.creator, dev.launchWallet, ...(dev.linkedWallets ?? [])].filter(
+      (x): x is string => typeof x === 'string' && x.length > 0,
+    ),
+  );
+  const relatedHolders = (lp.lpAllHolders ?? []).filter((h) => h.owner && relatedWallets.has(h.owner));
+  const relatedOfLive =
+    livePct !== undefined && livePct > 0
+      ? (relatedHolders.reduce((sum, h) => sum + h.pct, 0) / livePct) * 100
+      : undefined;
+  const relatedOfPool = relatedOfLive !== undefined && livePct !== undefined
+    ? (relatedOfLive / 100) * livePct
+    : undefined;
+
   if (lp.exists === false) {
     add('medium', '尚未建立 LP', '仍在 bonding curve 阶段，没有真实流动性池。');
   } else if (lp.burned === true || (lp.burnedPct ?? 0) >= LOCKED_PCT_LP) {
@@ -221,6 +239,23 @@ export function analyzeContract(data: ScanInput): DimensionResult {
           `其余 ${(livePct ?? 0).toFixed(1)}% 仍在流通。`,
       );
     }
+    // ⚠️ 门槛卡在**占全池 LP 的比例**上，不是占流通量的比例：
+    // 真正能撤走的是池子深度的那一份。用「占流通量」当门槛时，
+    // 一个销毁 96% 的池子只要有地址拿着剩下那 4% 的一大半就会被报成风险，
+    // 而它实际只能抽走池子的 3% —— 那是把小数放大成警报。
+    if (relatedOfPool !== undefined && relatedOfPool >= 5) {
+      // 关联钱包（付款方 / 给 creator 出资的钱包）持有 LP —— 这是真实的撤池敞口
+      add(
+        relatedOfPool >= 50 ? 'high' : 'medium',
+        '与部署者关联的钱包持有流通中的 LP',
+        `链上核对：与部署者关联的地址（创建交易的付款方、或给 creator 首笔交易出资的钱包）` +
+          `持有全池 LP 的约 ${relatedOfPool.toFixed(1)}%` +
+          (relatedOfLive !== undefined ? `（占仍在流通部分的 ${relatedOfLive.toFixed(1)}%）` : '') +
+          `，涉及 ${relatedHolders.length} 个地址 —— 这些地址可以随时提走对应份额的流动性。` +
+          '除非能证明它与项目方无关（例如是公开的做市商），否则应按项目方撤池风险看待。' +
+          (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''),
+      );
+    }
     if ((lp.creatorLpPct ?? 0) >= 5) {
       // 只有项目方自己持有的流通 LP 才是撤池跑路的直接风险
       const ofPool = livePct !== undefined ? ((lp.creatorLpPct ?? 0) / 100) * livePct : undefined;
@@ -262,9 +297,16 @@ export function analyzeContract(data: ScanInput): DimensionResult {
         'low',
         '流通中的 LP 分散在多个地址',
         (livePct !== undefined ? `约 ${livePct.toFixed(1)}% 的 LP 仍在流通，` : '') +
-          `由 ${lp.circulatingHolderCount} 个地址分散持有（最大一个占流通量的 ${(lp.topCirculatingHolderPct ?? 0).toFixed(1)}%）。` +
-          '这些是各自添加流动性的持有人，撤走自己那份属于正常的 AMM 行为，不构成项目方撤池跑路 —— ' +
-          '但仍会让池子深度同步下降。' +
+          `由 ${lp.circulatingHolderCount} 个地址分散持有（最大一个占流通量的 ${(lp.topCirculatingHolderPct ?? 0).toFixed(1)}%）` +
+          (relatedHolders.length > 0
+            ? `，其中 ${relatedHolders.length} 个是与部署者关联的地址（见上一条，不能算作第三方流动性）`
+            : '') +
+          '。' +
+          (relatedHolders.length > 0
+            ? '除关联地址那一份之外，其余是各自添加流动性的持有人，撤走自己那份属于正常的 AMM 行为' +
+              '（关联地址的部分见上一条，不能一并算作「第三方流动性」）—— '
+            : '这些是各自添加流动性的持有人，撤走自己那份属于正常的 AMM 行为，不构成项目方撤池跑路 —— ') +
+          '但无论如何，提走 LP 都会让池子深度同步下降。' +
           (lpEvidence ? `LP 持有者：${lpEvidence}。` : ''),
       );
     } else if (

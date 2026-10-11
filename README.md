@@ -162,14 +162,39 @@ RugCheck 给出的池与金库账户。
 **这个原则贯彻到了 provider 层**：RPC 读失败时返回 `contract: null`
 而不是空对象 `{}`。返回 `{}` 会让「权限状态未知」冒充「已检查」，把覆盖率从 0% 抬到 30%。
 
-### 6. 部署者 ≠ fee payer
+### 6. 部署者 ≠ fee payer（三级来源，实测三个地址互不相同）
 
-Pump.fun 的交易由**用户钱包**签名，fee payer 往往是买家而不是发币人。
-真正的部署者写在 Metaplex metadata 的 `creators` 字段里。
 用 fee payer 当 creator 会追错人，整个「开发者历史」维度都是错的。
+所以 creator 按**三级来源**解析（`src/providers/creator.ts`），从最权威往下回退：
 
-只有在 metadata 无 `creators` 时才回退到「发币交易的 fee payer」，
-**并在 warnings 里明确标注这是推断值**。
+| 优先级 | 来源 | 为什么可信 / 不可信 |
+|---|---|---|
+| 1 | pump.fun bonding curve 账户第 `49..81` 字节（**程序状态里的 creator**） | 程序自己写的字段、creator fee 的收款方，`set_creator` 可事后改写 —— 最权威 |
+| 2 | 链上 Metaplex metadata 的 `creators[0]` | 非 pump.fun 平台常见；**pump.fun 代币实测为空**（链上账户与 DAS 都为空），所以基本只在别的平台生效 |
+| 3 | 创建交易的付款方 | **推断值**。它只是付手续费的钱包；打包器/launchpad 发币时它是打包器，不是 dev |
+
+实测 `9raUVuze…pump` 上这三个来源给出**三个不同地址**：
+
+| 地址 | 出处 | 链上事实 |
+|---|---|---|
+| `Fpi4NERk…` | curve 程序状态（报告采用） | 程序记录的 creator；其**首笔交易资金来自下面那个付款方** |
+| `4JBz4tAK…` | 创建交易付款方（＝ launch wallet） | 创建指令的 `user`、签名者；持有 0.37% 代币与**10.8% 的全池 LP** |
+| `TSLvdd1p…` | RugCheck `report.creator` / `knownAccounts.CREATOR` | 创建指令的 `accounts[1]`；代币 mint authority 现为 `null`，它不在 metadata、也不持有 LP |
+
+偏移不是猜的：拿一个刚创建、还没被动过的代币（`55VGVACf…`，`complete=0`）对照，
+它的 curve 第 `49..81` 字节与创建交易付款方**完全一致**；`9raUVuze…` 上不一致，
+说明该币的 creator 在创建后被改过（打包器发币 → 把 creator 转给真 dev）。
+
+因此报告会做到：
+- 开发者维度一律按解析出的 `creator` 计算，`creatorSource` 与 `launchWallet` 都进 metrics；
+- 两级来源不一致时出结论 + 告警，明说「付费发币的钱包不一定是 dev」，**不猜谁是真的**；
+- 只有回退到第 3 级时才把身份标成**推断值**（medium），提醒读者给 dev 结论折价；
+- RugCheck 的 `CREATOR` 标签不再用于任何金额计算 —— 实测它指向的是另一个账户。
+
+⚠️ 与 LP 的关系：`creatorLpPct` 现在按**解析后的 creator** 重算。
+`9raUVuze…pump` 就因此暴露出一条原先被漏掉的敞口：creator 本人持有 0%，
+但**创建钱包持有全池 LP 的 10.8%（占流通部分 29.1%）** —— 只按 RugCheck 的标签算会得到「项目方持有 0」，
+把真实的可撤敞口读成没有。
 
 ### 7. 「买盘一边倒」可能是蜜罐，不是利好
 
@@ -349,6 +374,12 @@ RugCheck 的 `lpLockedPct` 名字叫「锁定」，但它实际是**不在流通
 | `lockerPct` | 链上 LP mint 持有者 ∩ 锁仓程序账户 | 锁仓/线性解锁合约托管了多少，附解锁时间 |
 | `withdrawablePct` | 链上 LP mint 持有者中的**普通钱包** | 仍在流通、可随时提走的敞口 |
 | `topCirculatingHolderPct` / `creatorLpPct` | 流通部分按持有人细分 | 是第三方各自加池子，还是项目方自己攥着 |
+| `lpAllHolders` + `creator`/`launchWallet` | 解析后的部署者地址 ∩ LP 持有者全量（≤20） | **与部署者关联的钱包**持有多少可撤敞口 |
+
+「关联钱包」＝解析出的 creator、创建交易付款方、以及给 creator 首笔交易出资的钱包。
+门槛卡在**占全池 LP 的比例**（≥5% 报 medium、≥50% 报 high），不是占流通量的比例 ——
+后者会把「销毁 96% 的池子里有人拿着剩下那 4%」放大成警报，而它实际只能抽走池子的 3%。
+
 
 判定顺序：整体销毁（≥95%）→ 报「LP 已销毁」；部分销毁 → 先报已销毁的比例与
 原始数字，再看流通部分：项目方持有（≥5% 流通量）报 high，单一地址占流通量 ≥50%
@@ -476,8 +507,12 @@ curl -X POST http://127.0.0.1:5273/api/scan \
   `burnedPct` 一律由链上 LP mint 供应量差额得出，不按字段名读
 - **流通中的 LP 不等于撤池风险** —— pump.fun 迁移销毁的是迁移那一笔 LP，
   之后任何第三方加流动性都会新铸 LP（`9raUVuze…pump` 有 37% 是这样来的）。
-  只有项目方自己持有的流通 LP 才是跑路风险；分散在多地址的属于正常 AMM 行为，
-  报告会分开表述，并给出集中度（按**流通量**算，不是按历史铸造量）
+  只有项目方（及**与部署者关联的钱包**）持有的流通 LP 才是跑路风险；
+  分散在多地址的属于正常 AMM 行为，报告会分开表述，并给出集中度
+  （按**流通量**算，不是按历史铸造量）
+- **不要把 RugCheck 的 `CREATOR` 标签当成 creator** —— 实测 `9raUVuze…pump` 上它指的是
+  创建指令的另一个账户（`TSLvdd1p…`），而真正的 creator 在 bonding curve 的程序状态里。
+  用错地址会让「项目方持有多少 LP」「dev 卖出多少」全部算到别人头上
 - **bonding curve 的阶段与真实 SOL 来自链上账户的 `complete` 标志** ——
   不能用「账户是否存在」推断：实测已毕业代币的曲线账户常常仍然存在、
   余额被清空（据此判会得到「尚未毕业 + curve 内 SOL 0」两条假结论）
