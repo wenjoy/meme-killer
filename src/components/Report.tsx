@@ -1,7 +1,11 @@
 'use client';
 
-import { DIMENSION_ORDER, SEVERITY_ORDER } from '@/core/constants';
 import { useEffect, useMemo, useState } from 'react';
+
+import { DEFAULT_TAB, TAB_META as T } from './reportTabs';
+import type { ReactNode } from 'react';
+
+import { DIMENSION_ORDER, SEVERITY_ORDER } from '@/core/constants';
 
 import { THRESHOLDS } from '@/core/constants';
 import type {
@@ -157,6 +161,88 @@ function Provenance({ report }: { report: ScanReport }) {
   );
 }
 
+
+/**
+ * 报告分页容器。
+ *
+ * 为什么分页：报告有 9 个区块（含两张可分页的大表 + 一个 2 分钟的深度分析入口），
+ * 平铺成一页要滚很久，而且「找抛压」要在十几屏里翻。
+ *
+ * ⚠️ 顶部结论卡（分数 / 仓位 / 硬否决）**不在**任何 tab 里 —— 它是常驻的。
+ * 硬否决是「一票判死」的结论，藏进默认不可见的 tab 等于没显示。
+ *
+ * `hidden` 用 CSS 而不是条件渲染：切回某个 tab 时，用户已经输入过的搜索词、
+ * 翻到的页码、展开的详情都会保留，不会因为切换而重置。
+ */
+export interface TabDef {
+  key: string;
+  label: string;
+  /** 右上角的计数徽标（比如「43 项」）；没有就不显示 */
+  badge?: string;
+  render: () => React.ReactNode;
+}
+
+function ReportTabs({ tabs }: { tabs: TabDef[] }) {
+  // 默认 tab 由 reportTabs.ts 的 DEFAULT_TAB 决定（有测试锁住「必须是概览」）
+  const [active, setActive] = useState(
+    tabs.find((t) => t.key === DEFAULT_TAB)?.key ?? tabs[0]?.key ?? '',
+  );
+  const current = tabs.find((x) => x.key === active) ?? tabs[0];
+
+  return (
+    <div className="space-y-4">
+      <div
+        role="tablist"
+        aria-label="报告分区"
+        className="flex flex-wrap gap-1 rounded-xl border border-ink-700 bg-ink-900/60 p-1"
+      >
+        {tabs.map((tab) => {
+          const on = tab.key === current?.key;
+          return (
+            <button
+              key={tab.key}
+              role="tab"
+              type="button"
+              aria-selected={on}
+              aria-controls={`panel-${tab.key}`}
+              onClick={() => setActive(tab.key)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition ${
+                on
+                  ? 'bg-ink-700/70 font-semibold text-ink-100'
+                  : 'text-ink-400 hover:bg-ink-800/60 hover:text-ink-200'
+              }`}
+            >
+              {tab.label}
+              {tab.badge && (
+                <span
+                  className={`rounded px-1 py-0.5 font-mono text-[9px] ${
+                    on ? 'bg-ink-900 text-ink-300' : 'bg-ink-800 text-ink-500'
+                  }`}
+                >
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 所有面板都渲染，用 hidden 切换 —— 保留用户在表里的输入与页码 */}
+      {tabs.map((tab) => (
+        <div
+          key={tab.key}
+          id={`panel-${tab.key}`}
+          role="tabpanel"
+          hidden={tab.key !== current?.key}
+          className="space-y-4"
+        >
+          {tab.render()}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function Report({
   report,
   onForceOverview,
@@ -253,218 +339,283 @@ export function Report({
         )}
       </section>
 
-      {/* ── 雷达图 + 维度速览 ────────────────────────────────── */}
-      <section className="grid gap-4 lg:grid-cols-[300px_1fr]">
-        <div className="flex flex-col items-center justify-center rounded-xl border border-ink-700 bg-ink-900/60 p-4">
-          <RadarChart scores={scores} missing={missing} />
-          <p className="mt-1 text-center text-[11px] leading-relaxed text-ink-400">
-            半径越大风险越高 · 灰色「无数据」表示该维度未采集
-          </p>
-        </div>
+      <ReportTabs
+        tabs={[
+          {
+            key: T.overview.key,
+            label: T.overview.label,
+            render: () => (
+              <>
+          {/* ── 雷达图 + 维度速览 ────────────────────────────────── */}
+          <section className="grid gap-4 lg:grid-cols-[300px_1fr]">
+            <div className="flex flex-col items-center justify-center rounded-xl border border-ink-700 bg-ink-900/60 p-4">
+              <RadarChart scores={scores} missing={missing} />
+              <p className="mt-1 text-center text-[11px] leading-relaxed text-ink-400">
+                半径越大风险越高 · 灰色「无数据」表示该维度未采集
+              </p>
+            </div>
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          {DIMENSION_ORDER.map((key) => {
-            const d = report.dimensions[key];
-            if (!d) return null;
-            const m = d.metrics ?? {};
-            return (
-              <div
-                key={key}
-                className="flex flex-col justify-between rounded-xl border border-ink-700 bg-ink-900/60 p-3"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-ink-400">{d.label}</span>
-                  <span
-                    className="font-mono text-lg font-semibold"
-                    style={{
-                      color: d.metrics?.available === 0 ? 'var(--color-ink-400)' : d.score >= 45 ? 'var(--color-danger)' : d.score >= 25 ? 'var(--color-warn)' : 'var(--color-safe)',
-                    }}
+            <div className="grid gap-3 sm:grid-cols-2">
+              {DIMENSION_ORDER.map((key) => {
+                const d = report.dimensions[key];
+                if (!d) return null;
+                const m = d.metrics ?? {};
+                return (
+                  <div
+                    key={key}
+                    className="flex flex-col justify-between rounded-xl border border-ink-700 bg-ink-900/60 p-3"
                   >
-                    {d.metrics?.available === 0 ? '—' : d.score.toFixed(0)}
-                  </span>
-                </div>
-                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-ink-400">
-                  {key === 'holders' && (
-                    <>
-                      <div className="flex justify-between">
-                        <dt>Top10</dt>
-                        <dd className="text-ink-200">{num(m.top10Pct)}%</dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>剔除项</dt>
-                        <dd className="text-ink-200">{num(m.excludedPct)}%</dd>
-                      </div>
-                      {Number(m.timelockPct) > 0 && (
-                        <div className="flex justify-between">
-                          <dt>锁仓</dt>
-                          <dd className="text-safe">{num(m.timelockPct)}%</dd>
-                        </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-ink-400">{d.label}</span>
+                      <span
+                        className="font-mono text-lg font-semibold"
+                        style={{
+                          color: d.metrics?.available === 0 ? 'var(--color-ink-400)' : d.score >= 45 ? 'var(--color-danger)' : d.score >= 25 ? 'var(--color-warn)' : 'var(--color-safe)',
+                        }}
+                      >
+                        {d.metrics?.available === 0 ? '—' : d.score.toFixed(0)}
+                      </span>
+                    </div>
+                    <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-ink-400">
+                      {key === 'holders' && (
+                        <>
+                          <div className="flex justify-between">
+                            <dt>Top10</dt>
+                            <dd className="text-ink-200">{num(m.top10Pct)}%</dd>
+                          </div>
+                          <div className="flex justify-between">
+                            <dt>剔除项</dt>
+                            <dd className="text-ink-200">{num(m.excludedPct)}%</dd>
+                          </div>
+                          {Number(m.timelockPct) > 0 && (
+                            <div className="flex justify-between">
+                              <dt>锁仓</dt>
+                              <dd className="text-safe">{num(m.timelockPct)}%</dd>
+                            </div>
+                          )}
+                          {Number(m.otherCustodyPct) > 0 && (
+                            <div className="flex justify-between">
+                              <dt>托管</dt>
+                              <dd className="text-warn">{num(m.otherCustodyPct)}%</dd>
+                            </div>
+                          )}
+                        </>
                       )}
-                      {Number(m.otherCustodyPct) > 0 && (
-                        <div className="flex justify-between">
-                          <dt>托管</dt>
-                          <dd className="text-warn">{num(m.otherCustodyPct)}%</dd>
-                        </div>
+                      {key === 'liquidity' && (
+                        <>
+                          <div className="flex justify-between">
+                            <dt>阶段</dt>
+                            <dd className="text-ink-200">
+                              {Number(m.graduated) === 1 ? '已毕业(AMM)' : Number(m.graduated) === 0 ? '曲线中' : '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between">
+                            <dt>curve SOL</dt>
+                            <dd className="text-ink-200">{num(m.realSolReserves)}</dd>
+                          </div>
+                          <div className="flex justify-between">
+                            <dt>净流入 SOL</dt>
+                            <dd className="text-ink-200">{num(m.netInflowSol)}</dd>
+                          </div>
+                          <div className="flex justify-between">
+                            <dt>卖单额</dt>
+                            <dd className="text-ink-200">{num(m.sellSharePct)}%</dd>
+                          </div>
+                          {m.buyTrades !== undefined && (
+                            <div className="flex justify-between">
+                              <dt>买/卖笔数</dt>
+                              <dd className="text-ink-200">
+                                {num(m.buyTrades)} / {num(m.sellTrades)}
+                                {m.sampleWindowMin !== undefined && (
+                                  <span className="ml-1 text-[10px] text-ink-500">
+                                    （样本跨 {num(m.sampleWindowMin)} 分钟）
+                                  </span>
+                                )}
+                              </dd>
+                            </div>
+                          )}
+                          {m.avgBuySol !== undefined && (
+                            <div className="flex justify-between">
+                              <dt>平均单笔 买/卖</dt>
+                              <dd className="text-ink-200" title="单笔成交额均值，用来核对「小额买盘撑笔数、大额卖盘出货」">
+                                {num(m.avgBuySol)} / {num(m.avgSellSol)} SOL
+                              </dd>
+                            </div>
+                          )}
+                          {m.sellMaxSol !== undefined && (
+                            <div className="flex justify-between">
+                              <dt>最大单笔卖单</dt>
+                              <dd className="text-ink-200">{num(m.sellMaxSol)} SOL</dd>
+                            </div>
+                          )}
+                          <div className="flex justify-between">
+                            <dt>持有人</dt>
+                            <dd className="text-ink-200">{num(m.holderCount)}</dd>
+                          </div>
+                        </>
                       )}
-                    </>
-                  )}
-                  {key === 'liquidity' && (
-                    <>
-                      <div className="flex justify-between">
-                        <dt>阶段</dt>
-                        <dd className="text-ink-200">
-                          {Number(m.graduated) === 1 ? '已毕业(AMM)' : Number(m.graduated) === 0 ? '曲线中' : '—'}
-                        </dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>curve SOL</dt>
-                        <dd className="text-ink-200">{num(m.realSolReserves)}</dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>净流入 SOL</dt>
-                        <dd className="text-ink-200">{num(m.netInflowSol)}</dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>卖单额</dt>
-                        <dd className="text-ink-200">{num(m.sellSharePct)}%</dd>
-                      </div>
-                      {m.buyTrades !== undefined && (
-                        <div className="flex justify-between">
-                          <dt>买/卖笔数</dt>
-                          <dd className="text-ink-200">
-                            {num(m.buyTrades)} / {num(m.sellTrades)}
-                            {m.sampleWindowMin !== undefined && (
-                              <span className="ml-1 text-[10px] text-ink-500">
-                                （样本跨 {num(m.sampleWindowMin)} 分钟）
-                              </span>
-                            )}
-                          </dd>
-                        </div>
+                      {key === 'developer' && (
+                        <>
+                          {m.creatorSource !== undefined && (
+                            <div className="flex justify-between">
+                              <dt>部署者来源</dt>
+                              <dd className="text-ink-200" title={String(m.creator ?? '')}>
+                                {m.creatorSource === 'curve'
+                                  ? '曲线程序状态'
+                                  : m.creatorSource === 'metadata'
+                                    ? 'metadata creators'
+                                    : '创建交易付款方（推断值）'}
+                              </dd>
+                            </div>
+                          )}
+                          {m.launchWallet !== undefined && (
+                            <div className="flex justify-between">
+                              <dt>创建钱包</dt>
+                              <dd className="font-mono text-warn" title={`与 creator ${String(m.creator ?? '')} 不是同一个地址`}>
+                                {shortAddr(String(m.launchWallet))}
+                              </dd>
+                            </div>
+                          )}
+                          <div className="flex justify-between">
+                            <dt>历史发币</dt>
+                            <dd className="text-ink-200" title="只统计发币数量；这些代币的结局（是否 rug）本工具不回溯，因此不判定">
+                              {num(m.priorTokenCount)} 个
+                            </dd>
+                          </div>
+                          <div className="flex justify-between">
+                            <dt>dev 卖出</dt>
+                            <dd className="text-ink-200">
+                              {m.devSoldRatio === undefined ? '—' : `${(Number(m.devSoldRatio) * 100).toFixed(0)}%`}
+                            </dd>
+                          </div>
+                        </>
                       )}
-                      {m.avgBuySol !== undefined && (
-                        <div className="flex justify-between">
-                          <dt>平均单笔 买/卖</dt>
-                          <dd className="text-ink-200" title="单笔成交额均值，用来核对「小额买盘撑笔数、大额卖盘出货」">
-                            {num(m.avgBuySol)} / {num(m.avgSellSol)} SOL
-                          </dd>
-                        </div>
+                      {key === 'contract' && (
+                        <>
+                          <div className="flex justify-between">
+                            <dt>mint 权限</dt>
+                            <dd
+                              className={
+                                Number(m.mintAuthorityRevoked) === 1
+                                  ? 'text-safe'
+                                  : Number(m.mintAuthorityRevoked) === 0
+                                    ? 'text-danger'
+                                    : 'text-ink-400'
+                              }
+                            >
+                              {Number(m.mintAuthorityRevoked) === 1
+                                ? '已弃'
+                                : Number(m.mintAuthorityRevoked) === 0
+                                  ? '未弃'
+                                  : '未知'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between">
+                            <dt>转移税</dt>
+                            <dd className="text-ink-200">{num(m.transferFeeBps)}bps</dd>
+                          </div>
+                        </>
                       )}
-                      {m.sellMaxSol !== undefined && (
-                        <div className="flex justify-between">
-                          <dt>最大单笔卖单</dt>
-                          <dd className="text-ink-200">{num(m.sellMaxSol)} SOL</dd>
-                        </div>
+                      {key === 'social' && (
+                        <>
+                          <div className="flex justify-between">
+                            <dt>24h 提及</dt>
+                            <dd className="text-ink-200">{num(m.mentions24h)}</dd>
+                          </div>
+                          <div className="flex justify-between">
+                            <dt>疑似 bot</dt>
+                            <dd className="text-ink-200">{((Number(m.botRatio) || 0) * 100).toFixed(0)}%</dd>
+                          </div>
+                        </>
                       )}
-                      <div className="flex justify-between">
-                        <dt>持有人</dt>
-                        <dd className="text-ink-200">{num(m.holderCount)}</dd>
-                      </div>
-                    </>
-                  )}
-                  {key === 'developer' && (
-                    <>
-                      {m.creatorSource !== undefined && (
-                        <div className="flex justify-between">
-                          <dt>部署者来源</dt>
-                          <dd className="text-ink-200" title={String(m.creator ?? '')}>
-                            {m.creatorSource === 'curve'
-                              ? '曲线程序状态'
-                              : m.creatorSource === 'metadata'
-                                ? 'metadata creators'
-                                : '创建交易付款方（推断值）'}
-                          </dd>
-                        </div>
-                      )}
-                      {m.launchWallet !== undefined && (
-                        <div className="flex justify-between">
-                          <dt>创建钱包</dt>
-                          <dd className="font-mono text-warn" title={`与 creator ${String(m.creator ?? '')} 不是同一个地址`}>
-                            {shortAddr(String(m.launchWallet))}
-                          </dd>
-                        </div>
-                      )}
-                      <div className="flex justify-between">
-                        <dt>历史发币</dt>
-                        <dd className="text-ink-200" title="只统计发币数量；这些代币的结局（是否 rug）本工具不回溯，因此不判定">
-                          {num(m.priorTokenCount)} 个
-                        </dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>dev 卖出</dt>
-                        <dd className="text-ink-200">
-                          {m.devSoldRatio === undefined ? '—' : `${(Number(m.devSoldRatio) * 100).toFixed(0)}%`}
-                        </dd>
-                      </div>
-                    </>
-                  )}
-                  {key === 'contract' && (
-                    <>
-                      <div className="flex justify-between">
-                        <dt>mint 权限</dt>
-                        <dd
-                          className={
-                            Number(m.mintAuthorityRevoked) === 1
-                              ? 'text-safe'
-                              : Number(m.mintAuthorityRevoked) === 0
-                                ? 'text-danger'
-                                : 'text-ink-400'
-                          }
-                        >
-                          {Number(m.mintAuthorityRevoked) === 1
-                            ? '已弃'
-                            : Number(m.mintAuthorityRevoked) === 0
-                              ? '未弃'
-                              : '未知'}
-                        </dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>转移税</dt>
-                        <dd className="text-ink-200">{num(m.transferFeeBps)}bps</dd>
-                      </div>
-                    </>
-                  )}
-                  {key === 'social' && (
-                    <>
-                      <div className="flex justify-between">
-                        <dt>24h 提及</dt>
-                        <dd className="text-ink-200">{num(m.mentions24h)}</dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>疑似 bot</dt>
-                        <dd className="text-ink-200">{((Number(m.botRatio) || 0) * 100).toFixed(0)}%</dd>
-                      </div>
-                    </>
-                  )}
-                </dl>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+                    </dl>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
 
-      <CustodySection report={report} />
-      <HoldersOverviewSection report={report} onForceOverview={onForceOverview} forcing={forcing} />
-      <TopHoldersSection report={report} />
-      <AllHoldersSection report={report} />
+          <CustodySection report={report} />
+          <HoldersOverviewSection report={report} onForceOverview={onForceOverview} forcing={forcing} />
+          <TopHoldersSection report={report} />
+          <AllHoldersSection report={report} />
 
-      <LargeSellsSection report={report} />
+          <LargeSellsSection report={report} />
 
-      <DiamondSection report={report} />
+          <DiamondSection report={report} />
 
-      <SellPressureSection report={report} onRunDeep={onRunDeep} deepPending={deepPending} />
+          <SellPressureSection report={report} onRunDeep={onRunDeep} deepPending={deepPending} />
 
-      <Provenance report={report} />
-
-      {/* ── 各维度详细发现 ───────────────────────────────────── */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold text-ink-300">逐项体检明细</h2>
-        <div className="grid gap-3 lg:grid-cols-2">
-          {DIMENSION_ORDER.map((key) => {
-            const d = report.dimensions[key];
-            return d ? <DimensionCard key={key} d={d} /> : null;
-          })}
-        </div>
-      </section>
+          <Provenance report={report} />
+              </>
+            ),
+          },
+          {
+            key: T.holders.key,
+            label: T.holders.label,
+            // 徽标用「有余额的持有人数」，没有就退回到「地址数」；都没有则不给徽标
+            ...(() => {
+              const hm = report.dimensions.holders?.metrics;
+              const n = Number(hm?.circulatingCount ?? hm?.holderCount);
+              return Number.isFinite(n) && n > 0 ? { badge: `${n}` } : {};
+            })(),
+            render: () => (
+              <>
+                <CustodySection report={report} />
+                <HoldersOverviewSection
+                  report={report}
+                  onForceOverview={onForceOverview}
+                  forcing={forcing}
+                />
+                <TopHoldersSection report={report} />
+                <AllHoldersSection report={report} />
+              </>
+            ),
+          },
+          {
+            key: T.flow.key,
+            label: T.flow.label,
+            render: () => (
+              <>
+                <LargeSellsSection report={report} />
+              </>
+            ),
+          },
+          {
+            key: T.behavior.key,
+            label: T.behavior.label,
+            render: () => (
+              <>
+                <DiamondSection report={report} />
+                <SellPressureSection
+                  report={report}
+                  onRunDeep={onRunDeep}
+                  deepPending={deepPending}
+                />
+              </>
+            ),
+          },
+          {
+            key: T.source.key,
+            label: T.source.label,
+            render: () => (
+              <>
+          {/* ── 各维度详细发现 ───────────────────────────────────── */}
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold text-ink-300">逐项体检明细</h2>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {DIMENSION_ORDER.map((key) => {
+                const d = report.dimensions[key];
+                return d ? <DimensionCard key={key} d={d} /> : null;
+              })}
+            </div>
+          </section>
+                <Provenance report={report} />
+              </>
+            ),
+          },
+        ]}
+      />
 
       <p className="rounded-lg border border-ink-700 bg-ink-900/40 px-4 py-3 text-xs leading-relaxed text-ink-400">
         本报告由链上与公开数据自动生成，<span className="text-ink-300">不构成投资建议</span>。
