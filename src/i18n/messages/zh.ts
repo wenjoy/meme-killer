@@ -133,6 +133,18 @@ export const zh = {
         sniper: '狙击仓位',
         retail: '散户',
       },
+      pnlBuckets: {
+        hugeProfit: '浮盈 > 200%（随时获利了结）',
+        profit: '浮盈 50% – 200%（有落袋动机）',
+        smallProfit: '浮盈 10% – 50%',
+        backToEven: '回本区 -10% ~ +10%（最易触发卖出）',
+        smallLoss: '浮亏 10% – 50%（等回本）',
+        hugeLoss: '浮亏 > 50%（通常死拿）',
+      },
+      custodyPrograms: {
+        jupiterLock: 'Jupiter Lock（锁仓）',
+        squadsMultisig: 'Squads 多签金库',
+      },
       reportTabs: '报告分区',
       loading: '加载中…',
     },

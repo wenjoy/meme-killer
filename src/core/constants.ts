@@ -163,13 +163,15 @@ export const THRESHOLDS = {
      * 深度亏损区（< -50%）通常是死拿不动的，浮盈巨大区最可能获利了结。
      */
     pnlBuckets: [
-      // 每一档都显式写 min/max（可缺省用 ±Infinity）：联合类型里可选字段访问不到
-      { label: '浮盈 > 200%（随时获利了结）', min: 200, max: Number.POSITIVE_INFINITY },
-      { label: '浮盈 50% – 200%（有落袋动机）', min: 50, max: 200 },
-      { label: '浮盈 10% – 50%', min: 10, max: 50 },
-      { label: '回本区 -10% ~ +10%（最易触发卖出）', min: -10, max: 10 },
-      { label: '浮亏 10% – 50%（等回本）', min: -50, max: -10 },
-      { label: '浮亏 > 50%（通常死拿）', min: Number.NEGATIVE_INFINITY, max: -50 },
+      // 每一档都显式写 min/max（可缺省用 ±Infinity）：联合类型里可选字段访问不到。
+      // `key` 供 UI 查字典（同 Finding 的做法：文案不属于分析层）。
+      // `label` 是过渡期中文回退。
+      { key: 'hugeProfit', label: '浮盈 > 200%（随时获利了结）', min: 200, max: Number.POSITIVE_INFINITY },
+      { key: 'profit', label: '浮盈 50% – 200%（有落袋动机）', min: 50, max: 200 },
+      { key: 'smallProfit', label: '浮盈 10% – 50%', min: 10, max: 50 },
+      { key: 'backToEven', label: '回本区 -10% ~ +10%（最易触发卖出）', min: -10, max: 10 },
+      { key: 'smallLoss', label: '浮亏 10% – 50%（等回本）', min: -50, max: -10 },
+      { key: 'hugeLoss', label: '浮亏 > 50%（通常死拿）', min: Number.NEGATIVE_INFINITY, max: -50 },
     ],
     /** 已卖出比例 ≥ 此值算「已出走」，不再计入抛压 */
     exitedSoldPct: 90,
@@ -316,14 +318,22 @@ export function scoreFromFindings(findings: { severity: string }[], cap = 100): 
 // 不是猜测。新增条目必须先核实再写入。
 export type CustodyKind = 'timelock' | 'multisig' | 'unknown-program';
 
-export const CUSTODY_PROGRAMS: Record<string, { kind: CustodyKind; label: string }> = {
+export const CUSTODY_PROGRAMS: Record<
+  string,
+  { kind: CustodyKind; label: string; labelKey: string }
+> = {
   // Jupiter Lock：线性归属/锁仓，托管账户布局可解析（解析器在 providers/helius.ts）
   LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn: {
     kind: 'timelock',
     label: 'Jupiter Lock（锁仓）',
+    labelKey: 'jupiterLock',
   },
   // Squads 多签金库：可随时签名转出，不剔除
-  SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf: { kind: 'multisig', label: 'Squads 多签金库' },
+  SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf: {
+    kind: 'multisig',
+    label: 'Squads 多签金库',
+    labelKey: 'squadsMultisig',
+  },
 };
 
 /**

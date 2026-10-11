@@ -44,6 +44,22 @@ function useDimLabel() {
   return (key: string, fallback: string) => dimLabel(key, fallback, t);
 }
 
+/**
+ * 盈亏分桶的标签本地化。
+ *
+ * 分桶的 min/max 来自 constants（逻辑），label 只是展示 —— 所以查
+ * `report.common.pnlBuckets.<key>`，缺 key 时回退到分析器给的中文。
+ */
+function bucketLabel(
+  b: { key?: string; label: string },
+  t: ((k: string) => string) | null,
+): string {
+  if (!b.key || !t) return b.label;
+  const k = `report.common.pnlBuckets.${b.key}`;
+  const v = t(k);
+  return v === k ? b.label : v;
+}
+
 function FindingRow({ f }: { f: Finding }) {
   const { t } = useI18n();
   // 把结构化结论（id + params）渲染成当前语言的文案。
@@ -668,7 +684,13 @@ function CustodySection({ report }: { report: ScanReport }) {
             {list.map((c) => (
               <tr key={c.address} className="bg-ink-950/40">
                 <td className="px-3 py-2 font-mono text-ink-300">{shortAddr(c.address)}</td>
-                <td className="px-3 py-2 text-ink-200">{c.label}</td>
+                <td className="px-3 py-2 text-ink-200">
+                  {c.labelKey &&
+                  t(`report.common.custodyPrograms.${c.labelKey}`) !==
+                    `report.common.custodyPrograms.${c.labelKey}`
+                    ? t(`report.common.custodyPrograms.${c.labelKey}`)
+                    : c.label}
+                </td>
                 <td className="px-3 py-2 text-right font-mono text-ink-200">{num(c.pct)}%</td>
                 <td className="px-3 py-2">
                   {c.kind !== 'timelock' ? (
@@ -1679,8 +1701,8 @@ function SellPressureSection({
             </thead>
             <tbody className="divide-y divide-ink-800">
               {baseBuckets.map((b) => (
-                <tr key={b.label} className="bg-ink-950/40">
-                  <td className="px-3 py-2 text-ink-300">{b.label}</td>
+                <tr key={b.key ?? b.label} className="bg-ink-950/40">
+                  <td className="px-3 py-2 text-ink-300">{bucketLabel(b, t)}</td>
                   <td className="px-3 py-2 text-right font-mono text-ink-200">{b.wallets}</td>
                   <td className="px-3 py-2 text-right font-mono text-ink-300">{num(b.unsoldTokens)}</td>
                   <td className="px-3 py-2 text-right font-mono text-ink-200">{num(b.pctOfCirculating)}%</td>

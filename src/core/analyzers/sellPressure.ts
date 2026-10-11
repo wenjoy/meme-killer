@@ -269,6 +269,7 @@ export function analyzeSellPressure(data: ScanInput): DimensionResult {
     });
     return {
       label: def.label,
+      key: def.key,
       ...(Number.isFinite(def.min) ? { minPnlPct: def.min } : {}),
       ...(Number.isFinite(def.max) ? { maxPnlPct: def.max } : {}),
       unsoldTokens: inB.reduce((s, r) => s + r.unsoldTokens, 0),

@@ -128,6 +128,18 @@ export const en: Messages = {
         sniper: 'Sniper',
         retail: 'Retail',
       },
+      pnlBuckets: {
+        hugeProfit: 'Unrealized > 200% (likely to take profit)',
+        profit: 'Unrealized 50% – 200% (incentive to sell)',
+        smallProfit: 'Unrealized 10% – 50%',
+        backToEven: 'Break-even -10% ~ +10% (most likely to sell)',
+        smallLoss: 'Unrealized -10% – -50% (waiting to break even)',
+        hugeLoss: 'Unrealized < -50% (usually holds)',
+      },
+      custodyPrograms: {
+        jupiterLock: 'Jupiter Lock (vesting)',
+        squadsMultisig: 'Squads multisig vault',
+      },
       reportTabs: 'Report sections',
       loading: 'Loading…',
     },

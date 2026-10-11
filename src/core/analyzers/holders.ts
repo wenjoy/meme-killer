@@ -342,6 +342,7 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
       address: h.address,
       kind: h.custody!.kind,
       label: h.custody!.label,
+      labelKey: h.custody!.labelKey,
       pct: h.pct,
       amount: h.amount,
       unlockAt: h.custody!.unlockAt,
@@ -368,7 +369,9 @@ export function analyzeHolders(data: ScanInput): DimensionResult {
     kind: h.kind,
     counted: !isExcludedKind(h.kind),
     ...(h.label ? { label: h.label } : {}),
-    ...(h.custody ? { custody: { kind: h.custody.kind, label: h.custody.label } } : {}),
+    ...(h.custody
+      ? { custody: { kind: h.custody.kind, label: h.custody.label, labelKey: h.custody.labelKey } }
+      : {}),
   });
   const topHolders: HolderRow[] = (() => {
     const rows = classified.slice(0, 20).map(toRow);

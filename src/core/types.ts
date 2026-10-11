@@ -17,6 +17,8 @@ export interface HolderCustody {
   programId: string;
   kind: CustodyKind;
   label: string;
+  /** 稳定 key（UI 查字典用）；过渡期与 label 并存 */
+  labelKey?: string;
   /**
    * 解锁时间。
    *
@@ -472,7 +474,7 @@ export interface HolderRow {
   /** 标签，例如「Raydium AMM Pool」「Jupiter Lock」 */
   label?: string;
   /** 该仓位是否由程序控制（锁仓/多签/托管），UI 用来标注 */
-  custody?: { kind: CustodyKind; label: string };
+  custody?: { kind: CustodyKind; label: string; labelKey?: string };
   /** 该 owner 名下有几个 token account（同一人多个账户时 > 1） */
   accounts?: number;
 }
@@ -683,6 +685,8 @@ export interface DiamondInput {
  */
 export interface SellPressureBucket {
   label: string;
+  /** 稳定 key（UI 查字典用）；过渡期与 label 并存 */
+  key?: string;
   /** 盈亏下限/上限（相对现价的百分比，正数＝浮盈） */
   minPnlPct?: number;
   maxPnlPct?: number;
@@ -781,6 +785,8 @@ export interface CustodyMetric {
   address: string;
   kind: CustodyKind;
   label: string;
+  /** 稳定 key（UI 查字典用）；过渡期与 label 并存 */
+  labelKey?: string;
   pct: number;
   amount: number;
   unlockAt?: string;
