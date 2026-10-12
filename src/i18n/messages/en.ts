@@ -38,9 +38,8 @@ export const en: Messages = {
     signFailed: 'Signature failed',
     retry: 'Retry',
     connecting: 'Connecting…',
-    needsWallet: 'Connect a wallet first',
-    howTo:
-      'Connect a Solana wallet and sign to use this site. Signing sends no transaction and costs no gas.',
+    needsWallet: 'Connect to use — totally free',
+    howTo: 'Just a signature. No transaction, no gas.',
     required: 'Connect and sign with a wallet to continue',
     rateLimited: 'Too many requests — wait {sec}s',
   },

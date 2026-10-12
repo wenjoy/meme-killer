@@ -8,6 +8,10 @@
 import { ConnectionProvider, WalletProvider as AdapterProvider } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { useMemo, type ReactNode } from 'react';
+import { PhantomWalletAdapter } from '@solana/wallet-adapter-phantom';
+import { SolflareWalletAdapter } from '@solana/wallet-adapter-solflare';
+import { CoinbaseWalletAdapter } from '@solana/wallet-adapter-coinbase';
+import { TrustWalletAdapter } from '@solana/wallet-adapter-trust';
 
 // 钱包弹窗的默认样式（必须引入，否则弹窗没有样式、看起来像坏掉了）
 import '@solana/wallet-adapter-react-ui/styles.css';
@@ -26,9 +30,27 @@ import '@solana/wallet-adapter-react-ui/styles.css';
 const PLACEHOLDER_RPC = 'https://api.mainnet-beta.solana.com';
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  // 空数组：只用钱包自己注入的适配器（Phantom / Solflare / Backpack …），
-  // 不打包 WalletConnect 之类的重型依赖。
-  const wallets = useMemo(() => [], []);
+  /**
+   * 显式注册主流钱包适配器。
+   *
+   * ⚠️ 之前用空数组 `[]`，指望 Wallet Adapter 自动发现注入的 provider。
+   * 实测**不可靠**：钱包选择器里一个都不显示，用户点了「连接钱包」后
+   * 看到空弹窗，根本连不上 —— 表现就是「按钮一直是连接钱包」。
+   *
+   * 只装 4 个主流钱包（Phantom / Solflare / Trust / Coinbase）。
+   * 不引入 WalletConnect（体积大、要额外配置 projectId）。
+   * ⚠️ Backpack 没有独立适配器包（它走 Wallet Standard 自动注册），
+   * 所以这里不列它 —— 装了会编译不过。
+   */
+  const wallets = useMemo(
+    () => [
+      new PhantomWalletAdapter(),
+      new SolflareWalletAdapter(),
+      new TrustWalletAdapter(),
+      new CoinbaseWalletAdapter(),
+    ],
+    [],
+  );
 
   return (
     <ConnectionProvider endpoint={PLACEHOLDER_RPC}>

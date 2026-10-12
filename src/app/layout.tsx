@@ -3,6 +3,7 @@ import './globals.css';
 
 import { I18nProvider } from '@/i18n';
 import { WalletProvider } from '@/components/WalletProvider';
+import { WalletGateProvider } from '@/components/WalletGate';
 
 export const metadata: Metadata = {
   title: 'Meme Killer',
@@ -17,7 +18,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen antialiased">
         {/* 钱包 Provider 在外层：报告里也要读钱包状态（决定能否扫描/深度分析） */}
         <WalletProvider>
-          <I18nProvider>{children}</I18nProvider>
+          {/* GateProvider 要在 WalletProvider 内层（它读 useWallet），
+              在 I18nProvider 外层（错误信息要能本地化） */}
+          <I18nProvider>
+            <WalletGateProvider>{children}</WalletGateProvider>
+          </I18nProvider>
         </WalletProvider>
       </body>
     </html>

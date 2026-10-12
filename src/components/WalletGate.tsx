@@ -21,7 +21,15 @@
  */
 import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
-import { useCallback, useEffect, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
 import { useI18n } from '@/i18n';
 
@@ -78,29 +86,52 @@ export interface Gate {
 }
 
 /**
+ * 钱包会话 Context。
+ *
+ * ⚠️ **必须是 Context，不能让人各调一次 hook。**
+ * 之前的 bug：`WalletButton`（顶部）与 `page.tsx`（表单门禁）各自调用
+ * `useWalletGate()`，于是有两份互不相干的 `useState`。签名成功后只有
+ * 其中一份变成 `ready`，另一份还停在 `no-wallet` ——
+ * 界面就出现「已经签过名了，按钮还写着连接钱包」。
+ *
+ * 顺带也解决了「同一个钱包签名弹窗被弹两次」的问题。
+ */
+const GateContext = createContext<Gate | null>(null);
+
+/**
  * 钱包会话 hook。
  *
  * 状态机：no-wallet → need-sign → signing → ready
  * 任何一步失败都落到 error，可重试。
  */
-export function useWalletGate(): Gate {
-  const { publicKey, connected, signMessage, disconnect: walletDisconnect } = useWallet();
+function useWalletGateState(): Gate {
+  const { publicKey, connected, signMessage, disconnect: walletDisconnect, connect: walletConnect } =
+    useWallet();
   const { setVisible } = useWalletModal();
   const [state, setState] = useState<GateState>('no-wallet');
   const [error, setError] = useState<string | null>(null);
 
   const wallet = publicKey?.toBase58() ?? null;
 
-  // 同步状态：钱包连没连、会话有没有、是不是同一个钱包
+  /**
+   * 同步状态：钱包连没连、会话有没有、是不是同一个钱包。
+   *
+   * ⚠️ 这里有个必须避开的坑：`doSign()` 成功后会把 state 设成 `ready`，
+   * 但紧接着这个 effect 也会跑（因为 publicKey/connected 变了），
+   * 如果它无条件重算，就会把刚设好的 `ready` 覆盖掉 ——
+   * 表现就是「签名成功了，按钮却弹回『签名以启用』」。
+   *
+   * 所以：**signing 与 error 状态期间不干预**（那是 doSign 正在处理的流程）。
+   */
   useEffect(() => {
-    if (!wallet) {
-      setState('no-wallet');
-      return;
-    }
-    const s = readSession();
-    // 会话必须属于**当前这个**钱包 —— 切换钱包（换账号）时要重新签
-    if (s && s.wallet === wallet) setState('ready');
-    else setState('need-sign');
+    setState((prev) => {
+      // 正在签名/刚出错 —— 交给 doSign 自己收尾，不要抢
+      if (prev === 'signing' || prev === 'error') return prev;
+      if (!wallet) return 'no-wallet';
+      const s = readSession();
+      // 会话必须属于**当前这个**钱包 —— 换钱包（换账号）时要重新签
+      return s && s.wallet === wallet ? 'ready' : 'need-sign';
+    });
   }, [wallet, connected]);
 
   const doSign = useCallback(async () => {
@@ -151,7 +182,9 @@ export function useWalletGate(): Gate {
 
   const connect = useCallback(async () => {
     if (!wallet) {
-      // 没连钱包 → 弹选择器
+      // 没连钱包 → 弹选择器让用户选一个。
+      // ⚠️ 选完之后 Wallet Adapter 会自动 connect（modal 内部处理），
+      // 这里不要手动 connect，否则会和 modal 的流程打架（弹两次窗）。
       setVisible(true);
       return;
     }
@@ -166,6 +199,28 @@ export function useWalletGate(): Gate {
   }, [walletDisconnect]);
 
   return { state, wallet, error, connect, disconnect, retry: doSign };
+}
+
+/** 包住整棵需要读钱包状态的树。状态只有这一份。 */
+export function WalletGateProvider({ children }: { children: ReactNode }) {
+  const gate = useWalletGateState();
+  // useMemo：避免每次渲染都产生新对象，导致下游组件无意义重渲染
+  const value = useMemo(() => gate, [gate]);
+  return <GateContext.Provider value={value}>{children}</GateContext.Provider>;
+}
+
+/**
+ * 读钱包会话。
+ *
+ * 必须在 `WalletGateProvider` 之内 —— 缺了会直接抛错而不是静默给出
+ * 错误状态（静默失败正是上一版 bug 难以察觉的原因）。
+ */
+export function useWalletGate(): Gate {
+  const ctx = useContext(GateContext);
+  if (!ctx) {
+    throw new Error('useWalletGate 必须在 <WalletGateProvider> 内使用');
+  }
+  return ctx;
 }
 
 /**
