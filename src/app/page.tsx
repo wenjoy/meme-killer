@@ -4,6 +4,9 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { useI18n } from '@/i18n';
 
+import Image from 'next/image';
+
+import logo from '@/assets/logo-header.png';
 import { installFlushOnExit, track } from '@/components/analytics';
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import { WalletButton } from '@/components/WalletButton';
@@ -154,9 +157,16 @@ export default function Home() {
     <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-12">
       <header className="mb-6">
         <div className="flex items-center gap-2.5">
-          <span className="grid h-9 w-9 place-items-center rounded-lg border border-accent/40 bg-accent/10 font-mono text-lg text-accent">
-            ◎
-          </span>
+          {/* logo 是 2:3 竖图（585×866），按**高度**定尺寸 —— 若按宽度约束
+              它会窄到看不清。h-9 配 w-auto 保持原始比例。
+              用 next/image 会自动按设备像素比给合适的尺寸 */}
+          <Image
+            src={logo}
+            alt=""
+            aria-hidden
+            priority
+            className="h-9 w-auto select-none"
+          />
           <div>
             <h1 className="text-lg font-bold text-ink-200">{t('app.name')}</h1>
           </div>
