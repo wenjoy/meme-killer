@@ -1,6 +1,67 @@
-# 部署（Fly.io）
+# 部署
 
-> 面向维护者。为什么选 Fly.io、每一步在做什么、出问题怎么查。
+> 面向维护者。三条路：本地 Docker、自有机器、Fly.io。
+> 为什么不能上 Vercel 见下。
+
+## 先看这条：没有信用卡怎么办
+
+**Fly.io 现在要求绑卡**（即使只用免费额度），没卡就走不了。
+这不是能绕过的 —— 用别人的卡、虚拟卡都有账号风控风险，不建议。
+
+不需要卡的方案：
+
+| 方案 | 适用 | 限制 |
+|---|---|---|
+| **本机 Docker**（推荐先用这个） | 自己电脑/公司机器 | 机器关机服务就停；公网访问要自己配 |
+| **自有 VPS**（Hetzner/DO/国内厂商） | 长期跑 | 要花钱（约 $5/月），但不需要「绑卡给平台」 |
+| **Oracle Cloud Always Free** | 想要免费长驻 | ARM 机型长期免费，注册有时要卡验证 |
+| **GitHub Codespaces** | 只做**演示** | 最长 6 小时会断，**不能当长期服务** |
+| Fly.io | 有卡时最省事 | 要绑卡 |
+
+⚠️ 不要为了「不要卡」去用 serverless 平台（Vercel/Netlify）——
+见下方说明，架构不兼容。
+
+---
+
+## 方案 A：本机 Docker（无需卡）
+
+仓库根目录已备好 `docker-compose.yml`：
+
+```bash
+# 1. 确认 .env.local 里有 RPC 配置
+cat .env.local
+
+# 2. 构建并启动（首次约 5-10 分钟，要编译 better-sqlite3）
+docker compose up -d --build
+
+# 3. 打开
+open http://127.0.0.1:5273
+
+# 4. 看日志 / 停止
+docker compose logs -f
+docker compose down
+```
+
+埋点数据存在 Docker 命名卷里，容器重建不丢。
+
+**想让别人访问**：需要把端口暴露到公网。最简单的两种：
+
+```bash
+# 临时给人看（Cloudflare 免费隧道，不需要卡、不需要域名）
+brew install cloudflared
+cloudflared tunnel --url http://127.0.0.1:5273
+# 会输出一个 https://xxx.trycloudflare.com 给你
+
+# 或者用 Tailscale / frp / 路由器端口转发
+```
+
+⚠️ 隧道地址是**公开的**，任何人拿到都能用。上线前建议先加全局每日限额
+（见文末「额度风险」）。
+
+---
+
+## 方案 B：Fly.io（需要卡）
+
 
 ## 为什么是 Fly.io 而不是 Vercel
 

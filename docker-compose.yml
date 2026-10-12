@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────────────
+# 本地 / 自有机器上跑 Meme Killer —— 不需要任何云平台、不需要信用卡
+#
+#   docker compose up -d --build     启动（首次构建约 5-10 分钟）
+#   docker compose logs -f           看日志
+#   docker compose down              停止
+#
+# 环境变量放 .env.local（已在 .gitignore 与 .dockerignore 里）
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: meme-killer:local
+    container_name: meme-killer
+    restart: unless-stopped          # 机器重启后自动拉起
+    ports:
+      - "5273:3000"                  # 宿主机 5273 → 容器 3000（与本地 dev 一致）
+
+    # 从 .env.local 读密钥。用 env_file 而不是把值写进这个文件 ——
+    # 后者会被提交进 git。
+    env_file:
+      - .env.local
+
+    environment:
+      NODE_ENV: production
+      ANALYTICS_DB: /data/analytics.db
+
+    volumes:
+      # 命名卷：埋点数据在容器重建后仍然保留。
+      # 若想直接看到 db 文件，可换成 bind mount：./data:/data
+      - meme_killer_data:/data
+
+    healthcheck:
+      # 与 fly.toml 用同一个端点：能力自检，不消耗 Helius 额度也不需签名
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/scan').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  meme_killer_data:
