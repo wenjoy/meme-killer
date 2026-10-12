@@ -9,7 +9,8 @@
     "start": "next start -p 5273",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --import ./src/core/test-setup.mjs --test \"src/**/*.test.ts\""
+    "test": "node --experimental-strip-types --import ./src/core/test-setup.mjs --test \"src/**/*.test.ts\"",
+    "stats": "node scripts/stats.mjs"
   },
   "dependencies": {
     "@solana/wallet-adapter-base": "^0.9.28",
@@ -17,6 +18,7 @@
     "@solana/wallet-adapter-react-ui": "^0.9.40",
     "@solana/wallet-adapter-wallets": "^0.19.40",
     "@solana/web3.js": "^1.99.0",
+    "better-sqlite3": "^13.0.3",
     "bs58": "^6.0.0",
     "next": "16.4.0",
     "react": "19.3.0",
@@ -25,6 +27,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

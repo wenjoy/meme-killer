@@ -23,6 +23,7 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import type { WalletAdapter } from '@solana/wallet-adapter-base';
 import type { PublicKey } from '@solana/web3.js';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
+import { track } from './analytics';
 import {
   createContext,
   useCallback,
@@ -239,9 +240,13 @@ function useWalletGateState(): Gate {
         expiresAt: number;
       };
       writeSession({ token, wallet: addr, expiresAt });
+      track('wallet_sign_ok');
       setState('ready');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      track('wallet_sign_fail', undefined, {
+        reason: (e instanceof Error ? e.message : String(e)).slice(0, 120),
+      });
       setState('error');
     }
     },
@@ -260,6 +265,7 @@ function useWalletGateState(): Gate {
    * （一次选钱包、一次签名确认），这是不可避免的 —— 那是钱包的行为。
    */
   const connect = useCallback(async () => {
+    track('wallet_connect');
     if (wallet) {
       await doSign();
       return;

@@ -22,6 +22,7 @@
 import { NextResponse } from 'next/server';
 import { verifySession } from './walletAuth';
 import { consume, DEEP_RATE, SCAN_RATE, type RateSpec } from './rateLimit';
+import { track } from './analytics/store';
 
 export type GuardKind = 'scan' | 'deep';
 
@@ -60,6 +61,8 @@ export interface GuardFail {
 export function guard(request: Request, kind: GuardKind): GuardOk | GuardFail {
   const session = verifySession(tokenFrom(request));
   if (!session) {
+    // 记一笔「没带有效凭证就来打 API」—— 这是探测/攻击的早期信号
+    track({ name: 'auth_rejected', meta: { path: new URL(request.url).pathname } });
     return {
       ok: false,
       response: NextResponse.json(
@@ -74,6 +77,11 @@ export function guard(request: Request, kind: GuardKind): GuardOk | GuardFail {
 
   const decision = consume(session.wallet, kind, SPECS[kind]);
   if (!decision.allowed) {
+    track({
+      name: 'scan_rate_limited',
+      wallet: session.wallet,
+      meta: { kind, retryAfterSec: decision.retryAfterSec },
+    });
     return {
       ok: false,
       response: NextResponse.json(

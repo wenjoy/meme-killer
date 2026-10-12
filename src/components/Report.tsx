@@ -8,6 +8,7 @@ import type { ReactNode } from 'react';
 import { DIMENSION_ORDER, HOLDER_KIND_LABELS, SEVERITY_ORDER } from '@/core/constants';
 import { useI18n } from '@/i18n';
 import { localizeFinding, localizeWarning } from '@/i18n/finding';
+import { track } from './analytics';
 
 import { THRESHOLDS } from '@/core/constants';
 import type {
@@ -291,7 +292,11 @@ function ReportTabs({ tabs }: { tabs: TabDef[] }) {
               type="button"
               aria-selected={on}
               aria-controls={`panel-${tab.key}`}
-              onClick={() => setActive(tab.key)}
+              onClick={() => {
+                setActive(tab.key);
+                // 记 tab 使用分布 —— 这是「哪个功能真被用」最直接的证据
+                track('tab_view', undefined, { tab: tab.key });
+              }}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition ${
                 on
                   ? 'bg-ink-700/70 font-semibold text-ink-100'
@@ -1340,6 +1345,7 @@ function AllHoldersSection({ report }: { report: ScanReport }) {
             </select>
             <a
               href={csvHref}
+              onClick={() => track('csv_export')}
               className="rounded-lg border border-ink-600 px-2.5 py-1.5 text-[11px] text-ink-300 transition hover:text-ink-100"
             >
               {t('report.allHolders.exportCsv')}

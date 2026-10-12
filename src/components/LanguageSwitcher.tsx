@@ -9,6 +9,7 @@
  * - 切换即时生效：语言状态在 React context 里，不刷新页面，
  *   所以已经渲染出来的报告会跟着变，扫描结果也不会丢。
  */
+import { track } from './analytics';
 import { useI18n, LOCALES } from '@/i18n';
 import { LOCALE_LABELS } from '@/i18n/types';
 
@@ -27,7 +28,11 @@ export function LanguageSwitcher() {
           <button
             key={l}
             type="button"
-            onClick={() => setLocale(l)}
+            onClick={() => {
+              setLocale(l);
+              // 只在真的换了语言时记，避免重复点同一个按钮刷数据
+              if (l !== locale) track('lang_switch', undefined, { from: locale, to: l });
+            }}
             aria-pressed={on}
             lang={l}
             className={`rounded-md px-2.5 py-1 text-[11px] transition ${

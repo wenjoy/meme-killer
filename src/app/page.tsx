@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { useI18n } from '@/i18n';
 
+import { installFlushOnExit, track } from '@/components/analytics';
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import { WalletButton } from '@/components/WalletButton';
 import {
@@ -32,6 +33,11 @@ export default function Home() {
   const [deepError, setDeepError] = useState<string | null>(null);
   const { t } = useI18n();
   const gate = useWalletGate();
+  // 页面浏览一次（组件挂载即记一次）+ 挂上退出前的队列冲刷
+  useEffect(() => {
+    track('page_view');
+    installFlushOnExit();
+  }, []);
   // 没签名就不能扫 —— 前端拦一道给即时反馈，服务端还有一道（那才是真的）
   const canScan = gate.state === 'ready';
 
@@ -39,6 +45,8 @@ export default function Home() {
     setPending(true);
     setError(null);
     setReport(null);
+    const t0 = Date.now();
+    track(opts?.forceOverview ? 'holders_load' : 'scan_start', address);
     try {
       const token = sessionToken();
       const res = await fetch('/api/scan', {
@@ -53,14 +61,19 @@ export default function Home() {
       if (!res.ok) {
         // 429 带上剩余秒数，让用户知道要等多久而不是「出错了」
         if (res.status === 429) {
+          track('scan_rate_limited', address, { retryAfterSec: json.retryAfterSec ?? 60 });
           throw new Error(t('wallet.rateLimited', { sec: json.retryAfterSec ?? 60 }));
         }
         if (res.status === 401) throw new Error(t('wallet.required'));
         throw new Error(json.error ?? `请求失败（${res.status}）`);
       }
       setReport(json as ScanReport);
+      // 记录耗时与得分：这两个字段最能反映「工具好不好用」
+      track('scan_ok', address, { ms: Date.now() - t0, score: json.score });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      track('scan_fail', address, { ms: Date.now() - t0, reason: msg.slice(0, 120) });
     } finally {
       setPending(false);
     }
@@ -76,6 +89,8 @@ export default function Home() {
     async (address: string) => {
       setDeepError(null);
       setDeep({ pct: 0, done: 0, total: 0 });
+      const t0 = Date.now();
+      track('deep_start', address);
       try {
         const token = sessionToken();
         const start = await fetch('/api/deep', {
@@ -120,7 +135,14 @@ export default function Home() {
         // 深度结果已缓存，重扫一次即可让报告用上真实成本
         await run(address);
       } catch (err) {
-        setDeepError(err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        setDeepError(msg);
+        // 限流与其它失败分开记：前者是产品策略生效，后者才是 bug
+        track(
+          /太频繁|Too many/.test(msg) ? 'scan_rate_limited' : 'deep_fail',
+          address,
+          { ms: Date.now() - t0, reason: msg.slice(0, 120) },
+        );
       } finally {
         setDeep(null);
       }
