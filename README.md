@@ -171,6 +171,7 @@ Inspect it yourself with `npm run stats`.
 | [design-decisions.md](docs/design-decisions.md) | The 23 engineering decisions, each tied to a specific real misjudgment |
 | [architecture.md](docs/architecture.md) | Module layout, responsibilities, API contract |
 | [known-limitations.md](docs/known-limitations.md) | What it deliberately cannot do, and why |
+| [deployment.md](docs/deployment.md) | Deploying to Fly.io, troubleshooting, single-instance constraint |
 | [roadmap.md](docs/roadmap.md) | What's next |
 
 > These are written in Chinese for the maintainer. The short version of

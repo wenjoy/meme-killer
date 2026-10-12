@@ -1,0 +1,69 @@
+# ─────────────────────────────────────────────────────────────────────
+# Fly.io 部署配置
+#
+# ⚠️⚠️ 最重要的一条：本项目**必须单实例运行**。
+#
+# 原因（不是保守，是正确性问题）：
+#   1. 限流桶在进程内存里（src/server/rateLimit.ts）。
+#      两个实例 = 每个实例各算一份，用户实际能扫的次数翻倍 ——
+#      这正是限流要防的事（烧 Helius 额度）。
+#   2. 深度分析是「后台任务 + 轮询」（src/providers/deepJobs.ts），
+#      队列在内存里且**必须单任务串行**（并发会撞 Helius 限流，
+#      且失败是静默的：用户看到「完成」但一半地址用窗口估算）。
+#      轮询请求落到另一个实例 → 永远查不到任务，页面卡在转圈。
+#   3. 钱包签名的 nonce 也存在内存里，跨实例会导致签名随机失败。
+#
+# 所以 min_machines_running = 1 且 auto_stop_machines = false，
+# 并且**不要** fly scale count > 1。
+# ─────────────────────────────────────────────────────────────────────
+
+app = "meme-killer"
+primary_region = "sjc"          # 圣何塞：Solana RPC 节点多在美国西岸，延迟低
+                                # 若主要用户在亚洲，改用 "nrt"（东京）
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  HOSTNAME = "0.0.0.0"
+  # 埋点数据库指向挂载的卷（见 [mounts]）
+  ANALYTICS_DB = "/data/analytics.db"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # ⚠️ 必须 false：见文件顶部说明，本应用不能在实例间分摊请求
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    # 深度分析一次最长约 2 分钟（实测 121 秒）。单机同时只跑一个深度任务，
+    # 其余请求很快返回（轮询）。50 足够，不需要更多 —— 而且这台机器
+    # 本来就是单实例，并发上限主要用来防止请求堆积。
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 60
+
+# 健康检查：命中能力自检接口（不消耗 Helius 额度，也不要求签名）
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "20s"
+  method = "GET"
+  path = "/api/scan"
+
+# 持久卷：埋点 SQLite 落在这里。
+# ⚠️ 卷是**单机绑定**的 —— 这也是不能水平扩展的原因之一。
+[[mounts]]
+  source = "meme_killer_data"
+  destination = "/data"
+
+# 机器规格：shared-cpu-1x + 512MB 足够。
+# 扫描是 IO 密集（等 RPC），不是 CPU 密集；深度分析会占内存但不到 512MB。
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1

@@ -1,0 +1,25 @@
+# 构建上下文里不该进镜像的东西。
+# 少了这个文件，1.4G 的 node_modules 会被发给 Docker daemon —— 构建慢到不可用。
+
+node_modules
+.next
+.git
+.gitignore
+data
+*.db
+*.db-wal
+*.db-shm
+
+# 本地密钥绝不能进镜像
+.env.local
+.env*.local
+
+# 测试与工具产物
+tmp-*
+*.log
+coverage
+docs/screenshot-*.png
+
+# Playwright 浏览器（几百 MB，与运行时无关）
+playwright
+.DS_Store

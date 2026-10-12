@@ -12,6 +12,7 @@
 | [design-decisions.md](design-decisions.md) | **最重要的一份**。23 条关键决策，涉及检测准确性的都要先读它 |
 | [architecture.md](architecture.md) | 找模块职责、改 API、加新维度 |
 | [known-limitations.md](known-limitations.md) | 有人问「为什么不检测 X」时先看这里 |
+| [deployment.md](deployment.md) | 部署到 Fly.io、排障、以及**为什么不能扩容到多实例** |
 | [roadmap.md](roadmap.md) | 决定下一步做什么 |
 
 ## 一句话背景
