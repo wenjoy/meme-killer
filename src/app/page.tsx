@@ -6,7 +6,11 @@ import { useI18n } from '@/i18n';
 
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import { WalletButton } from '@/components/WalletButton';
-import { sessionToken, useWalletGate } from '@/components/WalletGate';
+import {
+  sessionToken,
+  useWalletGate,
+  WALLET_BTN_PRIMARY,
+} from '@/components/WalletGate';
 import type { ScanReport } from '@/core/types';
 import { Report } from '@/components/Report';
 
@@ -182,7 +186,8 @@ export default function Home() {
             <button
               type="button"
               onClick={() => void gate.connect()}
-              className="mt-2 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-ink-950 transition-colors hover:bg-amber-400"
+              disabled={gate.state === 'signing'}
+              className={`mt-2 ${WALLET_BTN_PRIMARY}`}
             >
               {gate.state === 'signing' ? t('wallet.signing') : t('wallet.connect')}
             </button>

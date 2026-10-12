@@ -20,6 +20,8 @@
  * 一天只签一次**，不是每次扫描都签。
  */
 import { useWallet } from '@solana/wallet-adapter-react';
+import type { WalletAdapter } from '@solana/wallet-adapter-base';
+import type { PublicKey } from '@solana/web3.js';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import {
   createContext,
@@ -73,6 +75,22 @@ export function sessionToken(): string | null {
 
 export type GateState = 'no-wallet' | 'need-sign' | 'ready' | 'signing' | 'error';
 
+/**
+ * 钱包主按钮的样式 —— **唯一来源**。
+ *
+ * 右上角与表单里那个按钮曾经长得不一样（一个有边框、一个是实心琥珀色），
+ * 看起来像两个功能不同的东西。统一成一套：主操作是 accent 实心，
+ * 这样用户一眼看出「这两个是同一个动作」。
+ */
+export const WALLET_BTN_PRIMARY =
+  'rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors ' +
+  'hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50';
+
+/** 次要按钮（断开 / 重试）：与主按钮同尺寸，弱化成描边 */
+export const WALLET_BTN_SECONDARY =
+  'rounded-lg border border-ink-600 px-3 py-1.5 text-xs text-ink-300 transition-colors ' +
+  'hover:border-ink-500 hover:text-ink-100 disabled:opacity-50';
+
 export interface Gate {
   state: GateState;
   wallet: string | null;
@@ -105,8 +123,13 @@ const GateContext = createContext<Gate | null>(null);
  * 任何一步失败都落到 error，可重试。
  */
 function useWalletGateState(): Gate {
-  const { publicKey, connected, signMessage, disconnect: walletDisconnect, connect: walletConnect } =
-    useWallet();
+  const {
+    publicKey,
+    connected,
+    signMessage,
+    disconnect: walletDisconnect,
+    wallets: availableWallets,
+  } = useWallet();
   const { setVisible } = useWalletModal();
   const [state, setState] = useState<GateState>('no-wallet');
   const [error, setError] = useState<string | null>(null);
@@ -134,8 +157,51 @@ function useWalletGateState(): Gate {
     });
   }, [wallet, connected]);
 
-  const doSign = useCallback(async () => {
-    if (!publicKey || !signMessage) {
+  /**
+   * 等用户从弹窗里**选中**一个钱包。
+   *
+   * ⚠️ 不能用 `useWallet().wallet` 来等 —— 它只在 React 重新渲染后才更新，
+   * 而在 `connect()` 这个 async 流程里我们需要「此刻」就知道结果。
+   * 所以轮询 adapter 的 `readyState` / `connected`：
+   * 一旦有 adapter 报告已连接或正在连接，就说明用户选好了。
+   *
+   * 超时 3 分钟：用户可能开着弹窗去装钱包，给足时间；
+   * 但如果他直接关掉弹窗，这里会一直等 —— 所以同时检测弹窗是否已关闭
+   * （`WalletModalProvider` 会把 `.wallet-adapter-modal` 从 DOM 移除）。
+   */
+  const waitForAdapter = useCallback(async (): Promise<WalletAdapter | null> => {
+    /**
+     * ⚠️ 这里刻意**不**用「弹窗是否还开着」来判断用户有没有放弃。
+     *
+     * 原因：`<WalletModalProvider>` 自己会在选中钱包后调用 `adapter.connect()`
+     * 并**立即关闭弹窗**。所以「弹窗消失」并不代表用户放弃 ——
+     * 恰恰相反，它通常表示用户刚选好。之前用弹窗来判断，
+     * 结果选中钱包后 0.1 秒内就 return null，整个流程静默中断
+     * （页面什么都不做，用户以为坏了）。
+     *
+     * 改成只看 adapter 状态：连上了就用，超时才放弃。
+     */
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      const picked = availableWallets.find((w) => w.adapter.connected || w.adapter.connecting);
+      if (picked) return picked.adapter;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  }, [availableWallets]);
+
+  /**
+   * 签名并换取会话。
+   *
+   * `explicit` 用于「刚连上钱包」的场景：此时 `publicKey` 还没通过
+   * React 状态更新传播过来，闭包里拿到的仍是 null，所以把刚拿到的
+   * publicKey 直接传进来 —— 否则会出现「必须点两次」。
+   */
+  const doSign = useCallback(
+    async (explicit?: { publicKey: PublicKey; signMessage: (m: Uint8Array) => Promise<Uint8Array> }) => {
+    const pk = explicit?.publicKey ?? publicKey;
+    const sm = explicit?.signMessage ?? signMessage;
+    if (!pk || !sm) {
       setState('error');
       setError('当前钱包不支持消息签名');
       return;
@@ -143,7 +209,7 @@ function useWalletGateState(): Gate {
     setState('signing');
     setError(null);
     try {
-      const addr = publicKey.toBase58();
+      const addr = pk.toBase58();
 
       // 1. 取挑战
       const cRes = await fetch('/api/auth', {
@@ -155,7 +221,7 @@ function useWalletGateState(): Gate {
       const { nonce } = (await cRes.json()) as { nonce: string };
 
       // 2. 钱包签名（免 gas，不发起交易）
-      const sigBytes = await signMessage(new TextEncoder().encode(nonce));
+      const sigBytes = await sm(new TextEncoder().encode(nonce));
       const signature = btoa(String.fromCharCode(...sigBytes));
 
       // 3. 换会话 token
@@ -178,18 +244,50 @@ function useWalletGateState(): Gate {
       setError(e instanceof Error ? e.message : String(e));
       setState('error');
     }
-  }, [publicKey, signMessage]);
+    },
+    [publicKey, signMessage],
+  );
 
+  /**
+   * 一次点击走完全程：连钱包 → 立刻签名 → 拿到会话。
+   *
+   * ⚠️ 之前的实现是「没连钱包就只弹选择器，然后 return」，
+   * 于是用户点第一次只是把钱包连上（按钮变成「签名以启用」），
+   * 必须再点第二次才弹签名 —— 这就是「点两次」的来源。
+   *
+   * 现在的做法：弹选择器后**等钱包连上**，拿到 publicKey 与 signMessage
+   * 就直接接着签。用户全程只点一次，中间只看到钱包自己弹两次
+   * （一次选钱包、一次签名确认），这是不可避免的 —— 那是钱包的行为。
+   */
   const connect = useCallback(async () => {
-    if (!wallet) {
-      // 没连钱包 → 弹选择器让用户选一个。
-      // ⚠️ 选完之后 Wallet Adapter 会自动 connect（modal 内部处理），
-      // 这里不要手动 connect，否则会和 modal 的流程打架（弹两次窗）。
-      setVisible(true);
+    if (wallet) {
+      await doSign();
       return;
     }
-    await doSign();
-  }, [wallet, setVisible, doSign]);
+
+    // 没连钱包：先弹选择器，再等连接结果
+    setVisible(true);
+    const adapter = await waitForAdapter();
+    if (!adapter) return; // 用户关掉了弹窗，什么都不做
+
+    setState('signing');
+    setError(null);
+    try {
+      await adapter.connect();
+      const pk = adapter.publicKey;
+      // signMessage 只在 SignerWalletAdapter 上存在（纯 watch-only 钱包没有）
+      const signer = adapter as WalletAdapter & {
+        signMessage?: (m: Uint8Array) => Promise<Uint8Array>;
+      };
+      const sm = signer.signMessage?.bind(signer);
+      if (!pk || !sm) throw new Error('钱包没有提供公钥或签名能力');
+      // 把刚拿到的 pk/sm 直接传进去 —— 不能等 React 状态更新
+      await doSign({ publicKey: pk, signMessage: sm });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setState('error');
+    }
+  }, [wallet, setVisible, doSign, waitForAdapter]);
 
   const disconnect = useCallback(() => {
     writeSession(null);
