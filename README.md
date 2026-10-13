@@ -1,5 +1,9 @@
 # Meme Killer
 
+## Overview
+<img width="3584" height="5960" alt="meme-killer-overview" src="https://github.com/user-attachments/assets/300fce5a-0a57-428d-a006-fcd2afa6a144" />
+
+
 **Paste a Solana mint address. Find out whether this meme coin is a trap — before you buy.**
 
 Meme Killer is an on-chain risk scanner for Solana meme coins. It runs five
